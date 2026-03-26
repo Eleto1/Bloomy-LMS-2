@@ -1,9 +1,9 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { supabase } from './lib/supabase';
 import { useState, useEffect } from 'react';
-
-// Layouts
 import DashboardLayout from './components/DashboardLayout';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { Toaster } from '@/components/ui/toaster';
 
 // Auth Pages
 import Login from './pages/auth/Login';
@@ -12,92 +12,86 @@ import ForgotPassword from './pages/auth/ForgotPassword';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
-import AdminStudents from './pages/admin/AdminStudents';
-import AdminInstructors from './pages/admin/AdminInstructors';
 import AdminCourses from './pages/admin/AdminCourses';
-import AdminCohorts from './pages/admin/AdminCohorts';
-import AdminAttendance from './pages/admin/AdminAttendance';
-import AdminProgress from './pages/admin/AdminProgress';
-import AdminFinalAssessment from './pages/admin/AdminFinalAssessment';
-import AdminGradebook from './pages/admin/AdminGradebook';
-import AdminPayments from './pages/admin/AdminPayments';
-import AdminReports from './pages/admin/AdminReports';
-import AdminSettings from './pages/admin/AdminSettings';
-import AdminSurveyAnalytics from './pages/admin/AdminSurveyAnalytics'; // UPDATED IMPORT
-
-// Instructor Pages
-import InstructorDashboard from './pages/instructor/InstructorDashboard';
-import InstructorStudents from './pages/instructor/InstructorStudents';
-import InstructorAttendance from './pages/instructor/InstructorAttendance';
-import InstructorAssignments from './pages/instructor/InstructorAssignments';
-import InstructorGrades from './pages/instructor/InstructorGrades';
-import InstructorAnnouncements from './pages/instructor/InstructorAnnouncements';
+import AdminSurveyAnalytics from './pages/admin/AdminSurveyAnalytics';
 
 // Student Pages
 import StudentDashboard from './pages/student/StudentDashboard';
 import StudentCourses from './pages/student/StudentCourses';
 import StudentCourseViewer from './pages/student/StudentCourseViewer';
-import StudentSchedule from './pages/student/StudentSchedule';
-import StudentAssignments from './pages/student/StudentAssignments';
-import StudentGrades from './pages/student/StudentGrades';
-import StudentCommunity from './pages/student/StudentCommunity';
-import StudentCertificates from './pages/student/StudentCertificates';
-import StudentProfile from './pages/student/StudentProfile';
 
-// Context
-import { AuthProvider, useAuth } from './contexts/AuthContext';
+// --- Placeholder Component ---
+const Placeholder = () => (
+  <div className="p-10 text-center border-2 border-dashed m-10 rounded-lg bg-white">
+    <h1 className="text-xl font-bold text-gray-600">Page Under Construction</h1>
+    <p className="text-gray-400 mt-2">This section is not yet available.</p>
+  </div>
+);
 
+// --- Route Guards ---
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
-  if (!user) return <Navigate to="/login" />;
+  if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { role } = useAuth();
-  if (role !== 'admin') return <Navigate to="/" />;
+  if (role !== 'admin') return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
 function InstructorRoute({ children }: { children: React.ReactNode }) {
   const { role } = useAuth();
-  if (role !== 'instructor') return <Navigate to="/" />;
+  if (role !== 'instructor') return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
+// --- Main Routes ---
 function AppRoutes() {
+  const { user, role, loading } = useAuth();
+  
+  if (loading) return <div className="flex h-screen items-center justify-center">Initializing...</div>;
+
+  const getHome = () => {
+    if (role === 'admin') return '/admin';
+    if (role === 'instructor') return '/instructor';
+    return '/student';
+  };
+
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      {/* Public Routes */}
+      <Route path="/login" element={!user ? <Login /> : <Navigate to={getHome()} replace />} />
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
 
       {/* Admin Routes */}
       <Route path="/admin" element={<ProtectedRoute><AdminRoute><DashboardLayout /></AdminRoute></ProtectedRoute>}>
         <Route index element={<AdminDashboard />} />
-        <Route path="students" element={<AdminStudents />} />
-        <Route path="instructors" element={<AdminInstructors />} />
+        <Route path="students" element={<Placeholder />} />
+        <Route path="instructors" element={<Placeholder />} />
         <Route path="courses" element={<AdminCourses />} />
-        <Route path="cohorts" element={<AdminCohorts />} />
-        <Route path="attendance" element={<AdminAttendance />} />
-        <Route path="progress" element={<AdminProgress />} />
-        <Route path="final-assessment" element={<AdminFinalAssessment />} />
-        <Route path="gradebook" element={<AdminGradebook />} />
-        <Route path="payments" element={<AdminPayments />} />
-        <Route path="reports" element={<AdminReports />} />
-        <Route path="settings" element={<AdminSettings />} />
-        <Route path="survey-analytics" element={<AdminSurveyAnalytics />} />
+        <Route path="cohorts" element={<Placeholder />} />
+        <Route path="attendance" element={<Placeholder />} />
+        <Route path="progress" element={<Placeholder />} />
+        <Route path="final-assessment" element={<Placeholder />} />
+        <Route path="gradebook" element={<Placeholder />} />
+        <Route path="payments" element={<Placeholder />} />
+        <Route path="reports" element={<Placeholder />} />
+        <Route path="survey-responses" element={<AdminSurveyAnalytics />} />
+        <Route path="settings" element={<Placeholder />} />
       </Route>
 
       {/* Instructor Routes */}
       <Route path="/instructor" element={<ProtectedRoute><InstructorRoute><DashboardLayout /></InstructorRoute></ProtectedRoute>}>
-        <Route index element={<InstructorDashboard />} />
-        <Route path="students" element={<InstructorStudents />} />
-        <Route path="attendance" element={<InstructorAttendance />} />
-        <Route path="assignments" element={<InstructorAssignments />} />
-        <Route path="grades" element={<InstructorGrades />} />
-        <Route path="announcements" element={<InstructorAnnouncements />} />
+        <Route index element={<Placeholder />} />
+        <Route path="students" element={<Placeholder />} />
+        <Route path="attendance" element={<Placeholder />} />
+        <Route path="assignments" element={<Placeholder />} />
+        <Route path="grades" element={<Placeholder />} />
+        <Route path="announcements" element={<Placeholder />} />
       </Route>
 
       {/* Student Routes */}
@@ -105,34 +99,37 @@ function AppRoutes() {
         <Route index element={<StudentDashboard />} />
         <Route path="courses" element={<StudentCourses />} />
         <Route path="courses/:courseId" element={<StudentCourseViewer />} />
-        <Route path="schedule" element={<StudentSchedule />} />
-        <Route path="assignments" element={<StudentAssignments />} />
-        <Route path="grades" element={<StudentGrades />} />
-        <Route path="community" element={<StudentCommunity />} />
-        <Route path="certificates" element={<StudentCertificates />} />
-        <Route path="profile" element={<StudentProfile />} />
+        <Route path="schedule" element={<Placeholder />} />
+        <Route path="assignments" element={<Placeholder />} />
+        <Route path="grades" element={<Placeholder />} />
+        <Route path="community" element={<Placeholder />} />
+        <Route path="certificates" element={<Placeholder />} />
+        <Route path="profile" element={<Placeholder />} />
       </Route>
 
-      <Route path="/" element={<Navigate to="/login" />} />
+      {/* Fallback */}
+      <Route path="/" element={<Navigate to={user ? getHome() : '/login'} replace />} />
     </Routes>
   );
 }
 
+// --- App Component ---
 function App() {
-  const [initialized, setInitialized] = useState(false);
+  const [init, setInit] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(() => setInitialized(true));
+    supabase.auth.getSession().then(() => setInit(true));
     const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {});
     return () => subscription.unsubscribe();
   }, []);
 
-  if (!initialized) return <div className="flex h-screen items-center justify-center">Initializing...</div>;
+  if (!init) return <div className="flex h-screen items-center justify-center">Loading Application...</div>;
 
   return (
     <Router>
       <AuthProvider>
         <AppRoutes />
+        <Toaster />
       </AuthProvider>
     </Router>
   );

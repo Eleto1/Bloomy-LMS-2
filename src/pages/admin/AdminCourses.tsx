@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import DashboardLayout from '@/components/DashboardLayout';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -248,36 +247,34 @@ export default function AdminCourses() {
   const getCohortNames = (program: string) => allCohorts.filter(c => c.course === program).map(c => c.name).join(', ') || 'No Cohort';
 
   return (
-    <DashboardLayout>
-      <div className="space-y-6 animate-fade-in">
-        <div className="flex justify-between items-center">
-          <div><h2 className="font-display font-bold text-2xl">Courses</h2><p className="text-muted-foreground text-sm">Manage training programs</p></div>
-          <Button onClick={() => { setEditing(null); setForm({ title: '', description: '', program: '', status: 'Draft' }); setModalOpen(true); }}><Plus className="w-4 h-4 mr-1" /> Create Course</Button>
-        </div>
-        {loading ? <p>Loading...</p> : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {courses.map((course) => (
-              <Card key={course.id} className="border-border overflow-hidden">
-                <div className="h-24 gradient-hero flex items-center justify-center p-4"><h3 className="font-display font-bold text-lg text-primary-foreground text-center">{course.title}</h3></div>
-                <div className="p-5">
-                  <div className="flex flex-col gap-1 mb-2">
-                    <span className="text-xs text-secondary font-semibold uppercase">{course.program || 'General'}</span>
-                    <span className="text-xs text-gray-500 truncate"><strong>Cohort:</strong> {getCohortNames(course.program)}</span>
-                  </div>
-                  <div className="flex items-center justify-between pt-2 border-t border-border">
-                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${course.status === 'Active' ? 'bg-success/10 text-success' : 'bg-muted'}`}>{course.status}</span>
-                    <div className="flex gap-1">
-                      <Button variant="outline" size="sm" onClick={() => openBuilder(course)}>Build</Button>
-                      <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => { setEditing(course); setForm(course); setModalOpen(true); }}><Pencil className="w-3.5 h-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="w-8 h-8 text-destructive" onClick={() => setDeleteTarget(course)}><Trash2 className="w-3.5 h-3.5" /></Button>
-                    </div>
+    <div className="space-y-6 animate-fade-in p-6">
+      <div className="flex justify-between items-center">
+        <div><h2 className="font-display font-bold text-2xl">Courses</h2><p className="text-muted-foreground text-sm">Manage training programs</p></div>
+        <Button onClick={() => { setEditing(null); setForm({ title: '', description: '', program: '', status: 'Draft' }); setModalOpen(true); }}><Plus className="w-4 h-4 mr-1" /> Create Course</Button>
+      </div>
+      {loading ? <p>Loading...</p> : (
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {courses.map((course) => (
+            <Card key={course.id} className="border-border overflow-hidden">
+              <div className="h-24 gradient-hero flex items-center justify-center p-4"><h3 className="font-display font-bold text-lg text-primary-foreground text-center">{course.title}</h3></div>
+              <div className="p-5">
+                <div className="flex flex-col gap-1 mb-2">
+                  <span className="text-xs text-secondary font-semibold uppercase">{course.program || 'General'}</span>
+                  <span className="text-xs text-gray-500 truncate"><strong>Cohort:</strong> {getCohortNames(course.program)}</span>
+                </div>
+                <div className="flex items-center justify-between pt-2 border-t border-border">
+                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${course.status === 'Active' ? 'bg-success/10 text-success' : 'bg-muted'}`}>{course.status}</span>
+                  <div className="flex gap-1">
+                    <Button variant="outline" size="sm" onClick={() => openBuilder(course)}>Build</Button>
+                    <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => { setEditing(course); setForm(course); setModalOpen(true); }}><Pencil className="w-3.5 h-3.5" /></Button>
+                    <Button variant="ghost" size="icon" className="w-8 h-8 text-destructive" onClick={() => setDeleteTarget(course)}><Trash2 className="w-3.5 h-3.5" /></Button>
                   </div>
                 </div>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Modals */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
@@ -436,6 +433,6 @@ export default function AdminCourses() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent><DialogHeader><DialogTitle>Delete Course?</DialogTitle><DialogDescription>This cannot be undone.</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button><Button variant="destructive" onClick={handleDelete}>Delete</Button></DialogFooter></DialogContent>
       </Dialog>
-    </DashboardLayout>
+    </div>
   );
 }
