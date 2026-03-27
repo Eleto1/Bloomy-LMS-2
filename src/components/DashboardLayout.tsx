@@ -6,7 +6,6 @@ import {
   LogOut, ClipboardList, GraduationCap, BarChart2, DollarSign, FileCheck, BarChart, FileWarning
 } from 'lucide-react';
 
-// Complete Navigation List matching App.tsx routes
 const adminNav = [
   { label: 'Dashboard', path: '/admin', icon: LayoutDashboard },
   { label: 'Students', path: '/admin/students', icon: Users },
@@ -30,7 +29,7 @@ export default function DashboardLayout() {
   return (
     <div className="flex h-screen bg-gray-100">
       {/* Sidebar */}
-      <aside className="w-64 bg-slate-900 text-white flex flex-col">
+      <aside className="w-64 bg-slate-900 text-white flex flex-col flex-shrink-0">
         <div className="p-4 border-b border-slate-700">
           <h1 className="text-xl font-bold tracking-tight">Bloomy Academy</h1>
         </div>
@@ -61,7 +60,7 @@ export default function DashboardLayout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto bg-gray-50">
         <Outlet />
       </main>
     </div>
