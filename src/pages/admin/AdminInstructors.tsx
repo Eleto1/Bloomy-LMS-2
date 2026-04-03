@@ -1,504 +1,506 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Papa from 'papaparse';
-import DashboardLayout from '@/components/DashboardLayout';
+import { useState, useEffect, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, MoreHorizontal, Pencil, Trash2, Download, Upload } from 'lucide-react';
-import { supabase, createEphemeralSupabaseClient } from '@/lib/supabase';
+import { Badge } from '@/components/ui/badge';
+import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
-} from '@/components/ui/dialog';
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { Search, Loader2, UserPlus, AlertCircle, Pencil, BookOpen, Users, Filter, XCircle } from 'lucide-react';
 
 interface Instructor {
   id: string;
   full_name: string;
   email: string;
-  phone: string | null;
-  role: string;
-  cohort_id?: string | null;
   created_at: string;
 }
 
-interface CohortOption {
+interface Cohort {
   id: string;
   name: string;
-  course: string | null;
+  course?: string; // Added course to interface for grouping logic
 }
 
-const BULK_DEFAULT_PASSWORD = 'password123';
-const TEMPLATE_HEADERS = ['First Name', 'Last Name', 'Email', 'Phone', 'Cohort'] as const;
-
-function cohortLookupMap(cohorts: CohortOption[]): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const c of cohorts) {
-    m.set(c.name.trim().toLowerCase(), c.id);
-  }
-  return m;
+interface Course {
+  id: string;
+  title: string;
 }
 
-function parseBulkRow(row: Record<string, unknown>): {
-  firstName: string;
-  lastName: string;
-  email: string;
-  phone: string;
-  cohortName: string;
-} {
-  const norm = new Map<string, string>();
-  for (const [k, v] of Object.entries(row)) {
-    norm.set(k.trim().toLowerCase(), v == null ? '' : String(v).trim());
-  }
-  return {
-    firstName: norm.get('first name') ?? '',
-    lastName: norm.get('last name') ?? '',
-    email: norm.get('email') ?? '',
-    phone: norm.get('phone') ?? '',
-    cohortName: norm.get('cohort') ?? '',
-  };
-}
+type ModalMode = 'add' | 'edit' | null;
 
-function isUserAlreadyExistsError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    (m.includes('already') && (m.includes('registered') || m.includes('exists'))) ||
-    m.includes('user already') ||
-    m.includes('email address is already') ||
-    m.includes('duplicate key') ||
-    m.includes('unique constraint')
-  );
-}
-
-function downloadInstructorTemplate() {
-  const csv = `${TEMPLATE_HEADERS.join(',')}\n`;
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'bloomy_instructors_template.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-const emptyForm = { full_name: '', email: '', phone: '', password: '', cohort_id: '' };
-
-const AdminInstructors = () => {
-  const [instructors, setInstructors] = useState<Instructor[]>([]);
-  const [cohorts, setCohorts] = useState<CohortOption[]>([]);
+export default function AdminInstructors() {
+  const [list, setList] = useState<Instructor[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [cohortFilter, setCohortFilter] = useState<string>('all');
-  const [courseFilter, setCourseFilter] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<string>('created_desc');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<Instructor | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Instructor | null>(null);
-  const [form, setForm] = useState(emptyForm);
-  const [saving, setSaving] = useState(false);
-  const [bulkUploading, setBulkUploading] = useState(false);
-  const bulkFileInputRef = useRef<HTMLInputElement>(null);
-  const { toast } = useToast();
+  const [isSaving, setIsSaving] = useState(false);
+  const [modalMode, setModalMode] = useState<ModalMode>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  // Dropdown lists
+  const [cohorts, setCohorts] = useState<Cohort[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  
+  // Filters
+  const [filterCourse, setFilterCourse] = useState<string>('all');
+  const [filterCohort, setFilterCohort] = useState<string>('all');
+
+  // Bulk assignment map
+  const [instCourseMap, setInstCourseMap] = useState<Record<string, string[]>>({});
+  const [instCohortMap, setInstCohortMap] = useState<Record<string, string[]>>({});
+
+  // Form state
+  const [formData, setFormData] = useState({ full_name: '', email: '', password: '' });
+  const [selectedCohorts, setSelectedCohorts] = useState<string[]>([]);
+  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetchInitialData();
+  }, []);
+
+  const fetchInitialData = async () => {
+    setLoading(true);
+    await Promise.all([
+      fetchInstructors(),
+      fetchCohorts(),
+      fetchCourses(),
+      fetchAllAssignments(),
+    ]);
+    setLoading(false);
+  };
 
   const fetchInstructors = async () => {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select('id, full_name, email, created_at')
       .eq('role', 'instructor')
       .order('created_at', { ascending: false });
-    if (error) {
-      console.error(error);
-      toast({ title: 'Error fetching instructors', variant: 'destructive' });
-    } else if (data) {
-      setInstructors(data);
+
+    if (!error && data) setList(data);
+  };
+
+  const fetchCohorts = async () => {
+    // Fetch course name as well to display if needed
+    const { data } = await supabase.from('cohorts').select('id, name, course').order('name');
+    setCohorts(data || []);
+  };
+
+  const fetchCourses = async () => {
+    const { data } = await supabase.from('courses').select('id, title').order('title');
+    setCourses(data || []);
+  };
+
+  const fetchAllAssignments = async () => {
+    const [cRes, coRes] = await Promise.all([
+      supabase.from('course_instructors').select('instructor_id, course_id'),
+      supabase.from('cohort_instructors').select('instructor_id, cohort_id'),
+    ]);
+
+    const cMap: Record<string, string[]> = {};
+    (cRes.data || []).forEach(r => {
+      if (!cMap[r.instructor_id]) cMap[r.instructor_id] = [];
+      cMap[r.instructor_id].push(r.course_id);
+    });
+
+    const coMap: Record<string, string[]> = {};
+    (coRes.data || []).forEach(r => {
+      if (!coMap[r.instructor_id]) coMap[r.instructor_id] = [];
+      coMap[r.instructor_id].push(r.cohort_id);
+    });
+
+    setInstCourseMap(cMap);
+    setInstCohortMap(coMap);
+  };
+
+  const fetchInstructorAssignments = async (instructorId: string) => {
+    const [cohortRes, courseRes] = await Promise.all([
+      supabase.from('cohort_instructors').select('cohort_id').eq('instructor_id', instructorId),
+      supabase.from('course_instructors').select('course_id').eq('instructor_id', instructorId),
+    ]);
+    setSelectedCohorts((cohortRes.data || []).map(r => r.cohort_id));
+    setSelectedCourses((courseRes.data || []).map(r => r.course_id));
+  };
+
+  const resetForm = () => {
+    setFormData({ full_name: '', email: '', password: '' });
+    setSelectedCohorts([]);
+    setSelectedCourses([]);
+    setError('');
+    setSuccess('');
+  };
+
+  const openAddModal = () => { resetForm(); setModalMode('add'); setEditingId(null); };
+
+  const openEditModal = async (instructor: Instructor) => {
+    resetForm();
+    setFormData({ full_name: instructor.full_name, email: instructor.email, password: '' });
+    setEditingId(instructor.id);
+    setModalMode('edit');
+    await fetchInstructorAssignments(instructor.id);
+  };
+
+  const closeModal = () => { setModalMode(null); setEditingId(null); resetForm(); };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    setError('');
+  };
+
+  const toggleCourse = (id: string) => setSelectedCourses(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]);
+  
+  // Toggle logic for grouped cohorts
+  const toggleCohortGroup = (name: string, ids: string[]) => {
+    const allSelected = ids.every(id => selectedCohorts.includes(id));
+    
+    if (allSelected) {
+      // Remove all IDs for this group
+      setSelectedCohorts(prev => prev.filter(id => !ids.includes(id)));
+    } else {
+      // Add all IDs for this group
+      setSelectedCohorts(prev => [...new Set([...prev, ...ids])]);
     }
-    setLoading(false);
   };
 
-  useEffect(() => {
-    fetchInstructors();
-    const loadCohorts = async () => {
-      const { data, error } = await supabase.from('cohorts').select('id, name, course').order('name');
-      if (!error && data) setCohorts(data);
-    };
-    loadCohorts();
-  }, []);
+  const syncAssignments = async (instructorId: string) => {
+    // Sync Cohorts
+    const { data: existingCohorts } = await supabase.from('cohort_instructors').select('cohort_id').eq('instructor_id', instructorId);
+    const existingCohortIds = (existingCohorts || []).map(r => r.cohort_id);
+    const toRemoveCohorts = existingCohortIds.filter(id => !selectedCohorts.includes(id));
+    const toAddCohorts = selectedCohorts.filter(id => !existingCohortIds.includes(id));
+    if (toRemoveCohorts.length > 0) await supabase.from('cohort_instructors').delete().eq('instructor_id', instructorId).in('cohort_id', toRemoveCohorts);
+    if (toAddCohorts.length > 0) await supabase.from('cohort_instructors').insert(toAddCohorts.map(cohort_id => ({ instructor_id: instructorId, cohort_id })));
 
-  const uniqueCourses = Array.from(new Set(cohorts.map(c => c.course).filter(Boolean)));
-  const getSelectedCohort = (id: string | undefined) => cohorts.find(c => c.id === id);
-
-  const filtered = instructors
-    .filter(i => {
-      const matchesSearch = i.full_name?.toLowerCase().includes(search.toLowerCase()) ||
-        i.email?.toLowerCase().includes(search.toLowerCase());
-      const matchesCohort = cohortFilter === 'all' || i.cohort_id === cohortFilter;
-      const instructorCohort = getSelectedCohort(i.cohort_id);
-      const matchesCourse = courseFilter === 'all' || instructorCohort?.course === courseFilter;
-      return matchesSearch && matchesCohort && matchesCourse;
-    })
-    .sort((a, b) => {
-      if (sortBy === 'name_asc') return (a.full_name || '').localeCompare(b.full_name || '');
-      if (sortBy === 'name_desc') return (b.full_name || '').localeCompare(a.full_name || '');
-      if (sortBy === 'created_asc') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-
-  const openAdd = () => { setEditing(null); setForm(emptyForm); setModalOpen(true); };
-  const openEdit = (i: Instructor) => {
-    setEditing(i);
-    setForm({
-      full_name: i.full_name || '',
-      email: i.email || '',
-      phone: i.phone || '',
-      password: '',
-      cohort_id: i.cohort_id || '',
-    });
-    setModalOpen(true);
+    // Sync Courses
+    const { data: existingCourses } = await supabase.from('course_instructors').select('course_id').eq('instructor_id', instructorId);
+    const existingCourseIds = (existingCourses || []).map(r => r.course_id);
+    const toRemoveCourses = existingCourseIds.filter(id => !selectedCourses.includes(id));
+    const toAddCourses = selectedCourses.filter(id => !existingCourseIds.includes(id));
+    if (toRemoveCourses.length > 0) await supabase.from('course_instructors').delete().eq('instructor_id', instructorId).in('course_id', toRemoveCourses);
+    if (toAddCourses.length > 0) await supabase.from('course_instructors').insert(toAddCourses.map(course_id => ({ instructor_id: instructorId, course_id })));
   };
 
-  const handleSave = async () => {
-    setSaving(true);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(''); setSuccess(''); setIsSaving(true);
     try {
-      const cohortId = form.cohort_id ? form.cohort_id : null;
-      if (editing) {
-        const { error } = await supabase
-          .from('profiles')
-          .update({ full_name: form.full_name, phone: form.phone || null, cohort_id: cohortId })
-          .eq('id', editing.id);
-        if (error) throw error;
-        toast({ title: 'Instructor updated' });
-      } else {
-        const emailNorm = form.email.trim().toLowerCase();
-        const password = form.password?.trim() || 'TempPass123!';
-        
-        const rowClient = createEphemeralSupabaseClient();
-        try {
-          const { data: signData, error: signErr } = await rowClient.auth.signUp({
-            email: emailNorm,
-            password,
-            options: { data: { full_name: form.full_name, role: 'instructor' } },
-          });
-
-          if (signErr) throw signErr;
-          const newUser = signData.user ?? signData.session?.user ?? null;
-          
-          if (newUser) {
-            const { error: profErr } = await rowClient.from('profiles').upsert({
-              id: newUser.id,
-              email: emailNorm,
-              full_name: form.full_name,
-              phone: form.phone || null,
-              role: 'instructor',
-              cohort_id: cohortId,
-            });
-            if (profErr) throw profErr;
-            toast({ title: 'Instructor added' });
-          }
-        } finally {
-          await rowClient.auth.signOut();
-        }
-      }
-      setModalOpen(false);
-      fetchInstructors();
-    } catch (err: any) {
-      toast({ title: 'Error', description: err.message, variant: 'destructive' });
-    } finally { setSaving(false); }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    const { error } = await supabase.from('profiles').delete().eq('id', deleteTarget.id);
-    if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    else { toast({ title: 'Instructor deleted' }); fetchInstructors(); }
-    setDeleteTarget(null);
-  };
-
-  const exportCSV = () => {
-    const headers = ['Name', 'Email', 'Phone', 'Cohort', 'Course', 'Created At'];
-    const rows = instructors.map(i => {
-      const cohort = getSelectedCohort(i.cohort_id);
-      return [i.full_name, i.email, i.phone || '', cohort?.name || '—', cohort?.course || '—', i.created_at];
-    });
-    const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'instructors.csv'; a.click();
-  };
-
-  const handleBulkCsvSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-
-    setBulkUploading(true);
-    let success = 0;
-    let failed = 0;
-
-    try {
-      const { data: cohortRows } = await supabase.from('cohorts').select('id, name');
-      const cohortMap = cohortLookupMap((cohortRows ?? []) as CohortOption[]);
-
-      const parsed = await new Promise<Papa.ParseResult<Record<string, unknown>>>((resolve, reject) => {
-        Papa.parse<Record<string, unknown>>(file, {
-          header: true,
-          skipEmptyLines: 'greedy',
-          transformHeader: (h) => h.replace(/^\uFEFF/, '').trim(),
-          complete: resolve,
-          error: (err) => reject(err),
+      if (modalMode === 'add') {
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email: formData.email, password: formData.password,
+          options: { data: { full_name: formData.full_name } },
         });
-      });
+        if (authError) throw authError;
+        if (!authData.user) throw new Error('Failed to create user');
 
-      const rows = parsed.data.filter((row) => Object.values(row).some((v) => v != null && String(v).trim() !== ''));
-
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const { firstName, lastName, email, phone, cohortName } = parseBulkRow(row);
-        const full_name = `${firstName} ${lastName}`.trim();
-        const emailNorm = email.trim().toLowerCase();
-
-        if (!emailNorm || !full_name) {
-          failed++;
-          continue;
-        }
-
-        const cohortId = cohortName ? cohortMap.get(cohortName.trim().toLowerCase()) ?? null : null;
-
-        const rowClient = createEphemeralSupabaseClient();
-        try {
-          const { data: signData, error: signErr } = await rowClient.auth.signUp({
-            email: emailNorm,
-            password: BULK_DEFAULT_PASSWORD,
-            options: { data: { full_name, role: 'instructor' } },
-          });
-
-          if (signErr) {
-            if (isUserAlreadyExistsError(signErr.message)) failed++;
-            else failed++;
-            continue;
-          }
-
-          const newUser = signData.user ?? signData.session?.user ?? null;
-          if (newUser) {
-            const { error: profErr } = await rowClient.from('profiles').upsert({
-              id: newUser.id,
-              email: emailNorm,
-              full_name,
-              phone: phone || null,
-              role: 'instructor',
-              cohort_id: cohortId,
-            });
-            if (profErr) throw profErr;
-            success++;
-          }
-        } finally {
-          await rowClient.auth.signOut();
-        }
+        const { error: profileError } = await supabase.from('profiles').insert({
+          id: authData.user.id, full_name: formData.full_name, email: formData.email, role: 'instructor',
+        });
+        if (profileError) throw profileError;
+        await syncAssignments(authData.user.id);
+        setSuccess('Instructor added successfully!');
       }
 
-      toast({ title: 'Bulk Upload Finished', description: `${success} added, ${failed} failed.` });
-      fetchInstructors();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Bulk upload failed';
-      toast({ title: 'Error', description: message, variant: 'destructive' });
+      if (modalMode === 'edit' && editingId) {
+        const { error: updateError } = await supabase.from('profiles').update({ full_name: formData.full_name, email: formData.email }).eq('id', editingId);
+        if (updateError) throw updateError;
+        if (formData.password.trim()) {
+          const { error: pwError } = await supabase.auth.updateUser({ password: formData.password });
+          if (pwError) throw pwError;
+        }
+        await syncAssignments(editingId);
+        setSuccess('Instructor updated successfully!');
+      }
+
+      closeModal();
+      await fetchInstructors();
+      await fetchAllAssignments();
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message?.includes('Database error creating new user') ? 'Database error while creating user. Check Postgres logs.' : (err.message || 'An error occurred.'));
     } finally {
-      setBulkUploading(false);
+      setIsSaving(false);
     }
   };
+
+  const clearFilters = () => {
+    setFilterCourse('all');
+    setFilterCohort('all');
+    setSearch('');
+  };
+
+  const isFiltering = filterCourse !== 'all' || filterCohort !== 'all' || search !== '';
+
+  const filtered = list.filter(i => {
+    const matchesSearch = i.full_name?.toLowerCase().includes(search.toLowerCase()) || i.email?.toLowerCase().includes(search.toLowerCase());
+    const matchesCourse = filterCourse === 'all' || (instCourseMap[i.id] || []).includes(filterCourse);
+    const matchesCohort = filterCohort === 'all' || (instCohortMap[i.id] || []).includes(filterCohort);
+    return matchesSearch && matchesCourse && matchesCohort;
+  });
+
+  const getNamesForIds = (ids: string[] | undefined, masterList: (Course | Cohort)[]) => {
+    if (!ids) return [];
+    return ids.map(id => {
+      const found = masterList.find(m => m.id === id);
+      return found && 'title' in found ? found.title : found && 'name' in found ? found.name : 'Unknown';
+    }).filter(Boolean);
+  };
+
+  // ✅ LOGIC: Group cohorts by name
+  const groupedCohorts = useMemo(() => {
+    const map = new Map<string, { name: string; ids: string[] }>();
+    cohorts.forEach(c => {
+      if (map.has(c.name)) {
+        map.get(c.name)!.ids.push(c.id);
+      } else {
+        map.set(c.name, { name: c.name, ids: [c.id] });
+      }
+    });
+    return Array.from(map.values());
+  }, [cohorts]);
+
+  const AssignmentCheckboxes = ({ type }: { type: 'courses' | 'cohorts' }) => {
+    const items = type === 'courses' ? courses : groupedCohorts;
+    const selected = type === 'courses' ? selectedCourses : selectedCohorts;
+    const label = type === 'courses' ? 'Assign to Courses' : 'Assign to Cohorts';
+    const Icon = type === 'courses' ? BookOpen : Users;
+
+    // ✅ FIX: Calculate selected count based on Groups, not IDs
+    const selectedCount = useMemo(() => {
+      if (type === 'courses') return selected.length;
+      // For cohorts, count how many groups are fully selected
+      return (items as { name: string; ids: string[] }[]).filter(group => 
+        group.ids.every(id => selected.includes(id))
+      ).length;
+    }, [selected, items, type]);
+
+    return (
+      <div className="space-y-2">
+        <Label className="flex items-center gap-2">
+          <Icon className="w-4 h-4" /> {label}
+          {selectedCount > 0 && (
+            <span className="text-xs text-indigo-600 font-medium">({selectedCount} selected)</span>
+          )}
+        </Label>
+        {items.length === 0 ? (
+          <p className="text-sm text-gray-400 py-2">No {type} available.</p>
+        ) : (
+          <div className="border rounded-lg max-h-40 overflow-y-auto p-1 space-y-0.5 bg-gray-50">
+            {items.map((item, idx) => {
+              const displayName = 'title' in item ? item.title : item.name;
+              const itemIds = 'id' in item ? [item.id] : item.ids; 
+              
+              // Check if ALL IDs for this item are selected
+              const isChecked = itemIds.every(id => selected.includes(id));
+              
+              return (
+                <label 
+                  key={idx} 
+                  className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors text-sm ${isChecked ? 'bg-indigo-50 text-indigo-800' : 'hover:bg-gray-100 text-gray-700'}`}
+                >
+                  <input 
+                    type="checkbox" 
+                    checked={isChecked} 
+                    onChange={() => {
+                      if (type === 'courses') {
+                        toggleCourse(itemIds[0]);
+                      } else {
+                        toggleCohortGroup(displayName, itemIds);
+                      }
+                    }} 
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" 
+                  />
+                  {displayName}
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const selectStyles = "h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
   return (
-    <DashboardLayout>
-      <div className="space-y-6 animate-fade-in">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h2 className="font-display font-bold text-2xl text-foreground">Instructors</h2>
-            <p className="text-muted-foreground text-sm">Manage your teaching staff ({instructors.length})</p>
+    <div className="space-y-6 p-6">
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold">Instructors / Facilitators</h1>
+
+        {/* ADD MODAL */}
+        <Dialog open={modalMode === 'add'} onOpenChange={(open) => { if (!open) closeModal(); else openAddModal(); }}>
+          <DialogTrigger asChild>
+            <Button><UserPlus className="w-4 h-4 mr-2" />Add New Facilitator</Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader><DialogTitle>Add New Instructor/Facilitator</DialogTitle></DialogHeader>
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2"><Label htmlFor="add_name">Full Name</Label><Input id="add_name" name="full_name" value={formData.full_name} onChange={handleInputChange} required placeholder="John Doe" /></div>
+                <div className="space-y-2"><Label htmlFor="add_email">Email Address</Label><Input id="add_email" name="email" type="email" value={formData.email} onChange={handleInputChange} required placeholder="john@example.com" /></div>
+              </div>
+              <div className="space-y-2"><Label htmlFor="add_pw">Password</Label><Input id="add_pw" name="password" type="password" value={formData.password} onChange={handleInputChange} required placeholder="••••••••" minLength={6} /></div>
+              <AssignmentCheckboxes type="courses" />
+              <AssignmentCheckboxes type="cohorts" />
+              {error && <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}</div>}
+              {success && <div className="text-green-600 text-sm bg-green-50 p-3 rounded">{success}</div>}
+              <div className="flex justify-end gap-3 pt-2">
+                <Button type="button" variant="outline" onClick={closeModal}>Cancel</Button>
+                <Button type="submit" disabled={isSaving}>{isSaving ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating...</> : 'Create Instructor'}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* EDIT MODAL */}
+        <Dialog open={modalMode === 'edit'} onOpenChange={(open) => { if (!open) closeModal(); }}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader><DialogTitle>Edit Instructor/Facilitator</DialogTitle></DialogHeader>
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2"><Label htmlFor="edit_name">Full Name</Label><Input id="edit_name" name="full_name" value={formData.full_name} onChange={handleInputChange} required placeholder="John Doe" /></div>
+                <div className="space-y-2"><Label htmlFor="edit_email">Email Address</Label><Input id="edit_email" name="email" type="email" value={formData.email} onChange={handleInputChange} required placeholder="john@example.com" /></div>
+              </div>
+              <div className="space-y-2"><Label htmlFor="edit_pw">New Password <span className="text-xs text-gray-400 font-normal ml-2">(leave blank to keep current)</span></Label><Input id="edit_pw" name="password" type="password" value={formData.password} onChange={handleInputChange} placeholder="••••••••" minLength={6} /></div>
+              <AssignmentCheckboxes type="courses" />
+              <AssignmentCheckboxes type="cohorts" />
+              {error && <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}</div>}
+              {success && <div className="text-green-600 text-sm bg-green-50 p-3 rounded">{success}</div>}
+              <div className="flex justify-end gap-3 pt-2">
+                <Button type="button" variant="outline" onClick={closeModal}>Cancel</Button>
+                <Button type="submit" disabled={isSaving}>{isSaving ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Saving...</> : 'Save Changes'}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Card className="p-4">
+        {/* FILTERS BAR */}
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-3 mb-4">
+          <div className="relative flex-1 max-w-sm w-full">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Input placeholder="Search by name or email..." value={search} onChange={e => setSearch(e.target.value)} className="pl-9 w-full" />
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={exportCSV}>Export CSV</Button>
-            <Button variant="outline" size="sm" onClick={downloadInstructorTemplate}>
-              <Download className="w-4 h-4 mr-1" /> Download Template
-            </Button>
-            <input
-              ref={bulkFileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              className="hidden"
-              onChange={handleBulkCsvSelected}
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={bulkUploading}
-              onClick={() => bulkFileInputRef.current?.click()}
-            >
-              <Upload className="w-4 h-4 mr-1" /> {bulkUploading ? 'Processing...' : 'Bulk Upload'}
-            </Button>
-            <Button variant="default" onClick={openAdd}><Plus className="w-4 h-4 mr-1" /> Add Instructor</Button>
+          
+          <div className="flex items-center gap-2 w-full md:w-auto">
+            <Filter className="w-4 h-4 text-gray-400 hidden md:block" />
+            <select value={filterCourse} onChange={e => setFilterCourse(e.target.value)} className={selectStyles + " md:w-[220px]"}>
+              <option value="all">All Courses</option>
+              {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+
+            <select value={filterCohort} onChange={e => setFilterCohort(e.target.value)} className={selectStyles + " md:w-[220px]"}>
+              <option value="all">All Cohorts</option>
+              {/* Filter dropdown also uses unique names */}
+              {Array.from(new Set(cohorts.map(c => c.name))).map(name => (
+                <option key={name} value={cohorts.find(co => co.name === name)?.id}>{name}</option>
+              ))}
+            </select>
+
+            {isFiltering && (
+              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-gray-500 hover:text-red-500 h-9 px-2">
+                <XCircle className="w-4 h-4 mr-1" /> Clear
+              </Button>
+            )}
           </div>
         </div>
 
-        <Card className="border-border">
-          <div className="p-4 border-b border-border">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input placeholder="Search instructors..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
-              </div>
-
-              <Select value={cohortFilter} onValueChange={setCohortFilter}>
-                <SelectTrigger><SelectValue placeholder="Filter by Cohort" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Cohorts</SelectItem>
-                  {cohorts.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-
-              <Select value={courseFilter} onValueChange={setCourseFilter}>
-                <SelectTrigger><SelectValue placeholder="Filter by Course" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Courses</SelectItem>
-                  {uniqueCourses.map(course => <SelectItem key={course} value={course || ''}>{course}</SelectItem>)}
-                </SelectContent>
-              </Select>
-
-              <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger><SelectValue placeholder="Sort by" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="created_desc">Newest First</SelectItem>
-                  <SelectItem value="created_asc">Oldest First</SelectItem>
-                  <SelectItem value="name_asc">Name (A-Z)</SelectItem>
-                  <SelectItem value="name_desc">Name (Z-A)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+        {/* RESULTS COUNT */}
+        {isFiltering && (
+          <div className="text-xs text-gray-500 mb-3 flex items-center gap-1">
+            Showing {filtered.length} of {list.length} instructors
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Name</th>
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Email</th>
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Phone</th>
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Cohort</th>
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden xl:table-cell">Course</th>
-                  <th className="text-left p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Joined</th>
-                  <th className="p-4"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">Loading...</td></tr>
-                ) : filtered.length === 0 ? (
-                  <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">No instructors found.</td></tr>
-                ) : filtered.map((i) => {
-                  const instructorCohort = getSelectedCohort(i.cohort_id);
-                  return (
-                    <tr key={i.id} className="border-b border-border last:border-0 hover:bg-muted/50 transition-colors">
-                      <td className="p-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full gradient-accent flex items-center justify-center text-xs font-bold text-accent-foreground">
-                            {(i.full_name || '?').split(' ').map(n => n[0]).join('').slice(0, 2)}
-                          </div>
-                          <div className="flex flex-col">
-                            <span className="font-medium text-sm text-foreground">{i.full_name}</span>
-                            <span className="text-xs text-muted-foreground md:hidden">{i.email}</span>
-                            <span className="text-xs text-muted-foreground mt-0.5 md:hidden">
-                              {instructorCohort?.name || 'No Cohort'}
-                            </span>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="p-4 text-sm text-muted-foreground hidden md:table-cell">{i.email}</td>
-                      <td className="p-4 text-sm text-muted-foreground hidden lg:table-cell">{i.phone || '—'}</td>
-                      <td className="p-4 text-sm text-muted-foreground hidden md:table-cell">
-                        {instructorCohort?.name || '—'}
-                      </td>
-                      <td className="p-4 text-sm text-muted-foreground hidden xl:table-cell">
-                        {instructorCohort?.course || '—'}
-                      </td>
-                      <td className="p-4 text-sm text-muted-foreground hidden sm:table-cell">{new Date(i.created_at).toLocaleDateString()}</td>
-                      <td className="p-4">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button></DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => openEdit(i)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => setDeleteTarget(i)} className="text-destructive"><Trash2 className="w-4 h-4 mr-2" /> Delete</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      </div>
+        )}
 
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>{editing ? 'Edit Instructor' : 'Add Instructor'}</DialogTitle></DialogHeader>
-          <div className="space-y-4 py-2">
-            <div><Label>Full Name</Label><Input value={form.full_name} onChange={e => setForm({...form, full_name: e.target.value})} className="mt-1.5" /></div>
-            {!editing && (
-              <>
-                <div><Label>Email</Label><Input type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="mt-1.5" /></div>
-                <div><Label>Password</Label><Input type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} placeholder="Min 6 characters" className="mt-1.5" /></div>
-              </>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Courses</TableHead>
+              <TableHead>Cohorts</TableHead>
+              <TableHead>Joined</TableHead>
+              <TableHead className="w-16"></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={6} className="text-center h-20"><Loader2 className="animate-spin mx-auto" /></TableCell></TableRow>
+            ) : filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center h-20 text-gray-500">
+                  {isFiltering ? "No instructors match the selected filters." : "No instructors found."}
+                </TableCell>
+              </TableRow>
+            ) : (
+              filtered.map(i => (
+                <InstructorRow
+                  key={i.id}
+                  instructor={i}
+                  courseNames={getNamesForIds(instCourseMap[i.id], courses)}
+                  cohortNames={[...new Set(getNamesForIds(instCohortMap[i.id], cohorts))]}
+                  onEdit={openEditModal}
+                />
+              ))
             )}
-            <div><Label>Phone</Label><Input value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} placeholder="+234..." className="mt-1.5" /></div>
-            
-            <div>
-              <Label>Cohort</Label>
-              {cohorts.length === 0 ? (
-                <p className="text-sm text-muted-foreground mt-1.5">
-                  No cohorts. <Link to="/admin/cohorts" className="text-secondary font-medium hover:underline">Create one</Link>
-                </p>
-              ) : (
-                <Select value={form.cohort_id || undefined} onValueChange={(v) => setForm({ ...form, cohort_id: v })}>
-                  <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select Cohort" /></SelectTrigger>
-                  <SelectContent>
-                    {cohorts.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving || !form.full_name}>{saving ? 'Saving...' : editing ? 'Update' : 'Add Instructor'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Instructor</AlertDialogTitle>
-            <AlertDialogDescription>Are you sure you want to delete {deleteTarget?.full_name}?</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </DashboardLayout>
+          </TableBody>
+        </Table>
+      </Card>
+    </div>
   );
-};
+}
 
-export default AdminInstructors;
+function InstructorRow({ instructor, courseNames, cohortNames, onEdit }: { 
+  instructor: Instructor; 
+  courseNames: string[]; 
+  cohortNames: string[];
+  onEdit: (i: Instructor) => void 
+}) {
+  return (
+    <TableRow>
+      <TableCell className="font-medium">{instructor.full_name}</TableCell>
+      <TableCell className="text-gray-500">{instructor.email}</TableCell>
+      <TableCell>
+        {courseNames.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {courseNames.slice(0, 2).map((name, idx) => (
+              <Badge key={idx} variant="secondary" className="text-xs font-normal bg-indigo-50 text-indigo-700 hover:bg-indigo-50">
+                {name.length > 20 ? name.slice(0, 20) + '…' : name}
+              </Badge>
+            ))}
+            {courseNames.length > 2 && (
+              <Badge variant="secondary" className="text-xs font-normal bg-gray-100 text-gray-500">+{courseNames.length - 2}</Badge>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-gray-400">None</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {cohortNames.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {cohortNames.slice(0, 2).map((name, idx) => (
+              <Badge key={idx} variant="secondary" className="text-xs font-normal bg-emerald-50 text-emerald-700 hover:bg-emerald-50">
+                {name.length > 20 ? name.slice(0, 20) + '…' : name}
+              </Badge>
+            ))}
+            {cohortNames.length > 2 && (
+              <Badge variant="secondary" className="text-xs font-normal bg-gray-100 text-gray-500">+{cohortNames.length - 2}</Badge>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-gray-400">None</span>
+        )}
+      </TableCell>
+      <TableCell className="text-gray-500 text-sm">{new Date(instructor.created_at).toLocaleDateString()}</TableCell>
+      <TableCell>
+        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-gray-400 hover:text-indigo-600" onClick={() => onEdit(instructor)}>
+          <Pencil className="w-4 h-4" />
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+}

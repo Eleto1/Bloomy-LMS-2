@@ -1,11 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Use Environment Variables first. If not found (local dev), use empty string (will fail safely).
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error("Missing Supabase URL or Key! Check your .env file or Vercel Environment Variables.");
-}
+// REPLACE THESE WITH YOUR ACTUAL KEYS FROM SUPABASE DASHBOARD
+const supabaseUrl = 'https://zcxysvrwblwogubakssf.supabase.co';
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjeHlzdnJ3Ymx3b2d1YmFrc3NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMDc4MjQsImV4cCI6MjA4OTg4MzgyNH0.VVML6ANrmYomW1c88wYmCBJR-uX3DcpSffBx1AqzyUE';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
