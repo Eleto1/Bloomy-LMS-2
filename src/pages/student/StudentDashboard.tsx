@@ -306,7 +306,7 @@ export default function StudentDashboard() {
             <h1 className="text-2xl font-bold">
               {getGreeting()}, {profile?.full_name || 'Student'}
             </h1>
-            <p className="text-indigo-200 text-sm mt-1">Here&apos;s an overview of your classes at Bloomy LMS.</p>
+            <p className="text-indigo-200 text-sm mt-1">Here&apos;s an overview of your classes at Bloomy Technologies.</p>
 
             {cohortName && (
               <div className="flex items-center gap-2 mt-3">
