@@ -14,7 +14,8 @@ import {
   Plus, Pencil, Trash2, CalendarDays, Video, Loader2, FileText, HelpCircle,
   Link as LinkIcon, LayoutDashboard, ChevronDown, ChevronRight, Paperclip,
   ClipboardList, Copy, Save, Search, X, ArrowUp, ArrowDown, Star, Upload,
-  Globe, AlignLeft, FileUp, AlertCircle, CheckCircle2, User, Users
+  Globe, AlignLeft, FileUp, AlertCircle, CheckCircle2, User, Users, Lock,
+  GripVertical
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ const QUIZ_Q_TYPES = [
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 interface Course   { id: string; title: string; description: string; program: string; status: string; instructor_id?: string; }
-interface Module   { id: string; title: string; course_id: string; order_index: number; unlock_date?: string; }
+interface Module   { id: string; title: string; course_id: string; order_index: number; unlock_date?: string; sequential_lessons?: boolean; }
 interface Lesson   { id: string; title: string; type: string; content: string; module_id: string; order_index: number; file_url?: string; file_downloadable?: boolean; indent_level?: number; quiz_data?: any; assignment_config?: AssignmentConfig; }
 interface Schedule { id: string; title: string; scheduled_at: string; days: string[]; time: string; is_recurring: boolean; meeting_url: string; }
 interface Cohort   { id: string; name: string; course: string; }
@@ -105,6 +106,7 @@ export default function AdminCourses() {
   const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
   const [moduleTitleInput,setModuleTitleInput]= useState('');
   const [moduleDateInput, setModuleDateInput] = useState('');
+  const [moduleSeqInput,  setModuleSeqInput]  = useState(false);
 
   const [lessonEditorOpen, setLessonEditorOpen] = useState(false);
   const [activeLesson,     setActiveLesson]     = useState<Lesson | null>(null);
@@ -123,6 +125,12 @@ export default function AdminCourses() {
   const [newSchedule,  setNewSchedule]  = useState({ days: [] as string[], time: '09:00', meeting_url: '' });
   const [courseCohorts,setCourseCohorts]= useState<Cohort[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Course | null>(null);
+
+  // ── Drag-and-drop state ──────────────────────────────────────────────
+  const [draggedModuleIdx, setDraggedModuleIdx] = useState<number | null>(null);
+  const [draggedLessonKey, setDraggedLessonKey] = useState<string | null>(null); // format: "moduleId:lessonIdx"
+  const [dropTargetModuleIdx, setDropTargetModuleIdx] = useState<number | null>(null);
+  const [dropTargetLessonKey, setDropTargetLessonKey] = useState<string | null>(null);
 
   useEffect(() => { fetchInitialData(); }, []);
 
@@ -268,13 +276,13 @@ export default function AdminCourses() {
   // ── Module actions ────────────────────────────────────────────────────────
   const addModule = async () => {
     if (!activeCourse) return;
-    const { data } = await supabase.from('modules').insert({ course_id: activeCourse.id, title: 'New Module', order_index: modules.length }).select().single();
+    const { data } = await supabase.from('modules').insert({ course_id: activeCourse.id, title: 'New Module', order_index: modules.length, sequential_lessons: false }).select().single();
     if (data) setModules([...modules, data]);
   };
 
   const saveModuleTitle = async (id: string) => {
-    await supabase.from('modules').update({ title: moduleTitleInput, unlock_date: moduleDateInput || null }).eq('id', id);
-    setModules(modules.map(m => m.id === id ? { ...m, title: moduleTitleInput, unlock_date: moduleDateInput || null } : m));
+    await supabase.from('modules').update({ title: moduleTitleInput, unlock_date: moduleDateInput || null, sequential_lessons: moduleSeqInput }).eq('id', id);
+    setModules(modules.map(m => m.id === id ? { ...m, title: moduleTitleInput, unlock_date: moduleDateInput || null, sequential_lessons: moduleSeqInput } : m));
     setEditingModuleId(null);
   };
 
@@ -287,7 +295,7 @@ export default function AdminCourses() {
 
   const duplicateModule = async (mod: Module) => {
     if (!activeCourse) return; setSaving(true);
-    const { data: newMod } = await supabase.from('modules').insert({ course_id: activeCourse.id, title: `${mod.title} (Copy)`, order_index: modules.length }).select().single();
+    const { data: newMod } = await supabase.from('modules').insert({ course_id: activeCourse.id, title: `${mod.title} (Copy)`, order_index: modules.length, sequential_lessons: mod.sequential_lessons || false }).select().single();
     if (newMod) {
       const toCopy = lessons[mod.id] || [];
       if (toCopy.length > 0) await supabase.from('lessons').insert(toCopy.map(l => ({ module_id: newMod.id, title: l.title, type: l.type, content: l.content, file_url: l.file_url, file_downloadable: l.file_downloadable, quiz_data: l.quiz_data, assignment_config: l.assignment_config, order_index: l.order_index })));
@@ -302,6 +310,66 @@ export default function AdminCourses() {
     const nm = [...modules]; [nm[index], nm[ni]] = [nm[ni], nm[index]];
     setModules(nm);
     nm.forEach((m, i) => supabase.from('modules').update({ order_index: i }).eq('id', m.id));
+  };
+
+  // ── Drag-and-drop handlers for modules ───────────────────────────────
+  const handleModuleDragStart = (e: React.DragEvent, idx: number) => {
+    setDraggedModuleIdx(idx);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `module:${idx}`);
+    // Make the dragged element semi-transparent
+    (e.currentTarget as HTMLElement).style.opacity = '0.4';
+  };
+
+  const handleModuleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedModuleIdx !== null && draggedModuleIdx !== idx) {
+      setDropTargetModuleIdx(idx);
+    }
+  };
+
+  const handleModuleDragEnd = (e: React.DragEvent) => {
+    (e.currentTarget as HTMLElement).style.opacity = '1';
+    setDraggedModuleIdx(null);
+    setDropTargetModuleIdx(null);
+  };
+
+  const handleModuleDrop = async (e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    const srcIdx = draggedModuleIdx;
+    if (srcIdx === null || srcIdx === targetIdx) {
+      setDraggedModuleIdx(null);
+      setDropTargetModuleIdx(null);
+      return;
+    }
+    const nm = [...modules];
+    const [moved] = nm.splice(srcIdx, 1);
+    nm.splice(targetIdx, 0, moved);
+    setModules(nm);
+    setDraggedModuleIdx(null);
+    setDropTargetModuleIdx(null);
+    // Persist new order
+    await Promise.all(nm.map((m, i) => supabase.from('modules').update({ order_index: i }).eq('id', m.id)));
+    toast({ title: 'Module order updated ✓' });
+  };
+
+  // ✅ NEW: Toggle sequential lessons on a module (saves immediately)
+  const toggleSequentialLessons = async (moduleId: string, checked: boolean) => {
+    // Optimistic update
+    setModules(prev => prev.map(m => m.id === moduleId ? { ...m, sequential_lessons: checked } : m));
+    try {
+      const { error } = await supabase.from('modules').update({ sequential_lessons: checked }).eq('id', moduleId);
+      if (error) throw error;
+      toast({ 
+        title: checked ? 'Sequential lessons enabled ✓' : 'Sequential lessons disabled',
+        description: checked ? 'Students must complete lessons in order' : 'Students can access all lessons freely'
+      });
+    } catch (e: any) {
+      // Revert on error
+      setModules(prev => prev.map(m => m.id === moduleId ? { ...m, sequential_lessons: !checked } : m));
+      toast({ title: 'Error updating module', description: e.message, variant: 'destructive' });
+    }
   };
 
   // ── Lesson actions ────────────────────────────────────────────────────────
@@ -356,6 +424,55 @@ export default function AdminCourses() {
     const nl = [...list]; [nl[index], nl[ni]] = [nl[ni], nl[index]];
     setLessons(prev => ({ ...prev, [moduleId]: nl }));
     nl.forEach((l, i) => supabase.from('lessons').update({ order_index: i }).eq('id', l.id));
+  };
+
+  // ── Drag-and-drop handlers for lessons ───────────────────────────────
+  const handleLessonDragStart = (e: React.DragEvent, moduleId: string, idx: number) => {
+    setDraggedLessonKey(`${moduleId}:${idx}`);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `lesson:${moduleId}:${idx}`);
+    (e.currentTarget as HTMLElement).style.opacity = '0.4';
+  };
+
+  const handleLessonDragOver = (e: React.DragEvent, moduleId: string, idx: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const targetKey = `${moduleId}:${idx}`;
+    if (draggedLessonKey && draggedLessonKey !== targetKey) {
+      // Only allow drop within the same module
+      const [srcModuleId] = draggedLessonKey.split(':');
+      if (srcModuleId === moduleId) {
+        setDropTargetLessonKey(targetKey);
+      }
+    }
+  };
+
+  const handleLessonDragEnd = (e: React.DragEvent) => {
+    (e.currentTarget as HTMLElement).style.opacity = '1';
+    setDraggedLessonKey(null);
+    setDropTargetLessonKey(null);
+  };
+
+  const handleLessonDrop = async (e: React.DragEvent, moduleId: string, targetIdx: number) => {
+    e.preventDefault();
+    if (!draggedLessonKey) return;
+    const [srcModuleId, srcIdxStr] = draggedLessonKey.split(':');
+    const srcIdx = parseInt(srcIdxStr, 10);
+    if (srcModuleId !== moduleId || srcIdx === targetIdx) {
+      setDraggedLessonKey(null);
+      setDropTargetLessonKey(null);
+      return;
+    }
+    const list = lessons[moduleId] || [];
+    const nl = [...list];
+    const [moved] = nl.splice(srcIdx, 1);
+    nl.splice(targetIdx, 0, moved);
+    setLessons(prev => ({ ...prev, [moduleId]: nl }));
+    setDraggedLessonKey(null);
+    setDropTargetLessonKey(null);
+    // Persist new order
+    await Promise.all(nl.map((l, i) => supabase.from('lessons').update({ order_index: i }).eq('id', l.id)));
+    toast({ title: 'Lesson order updated ✓' });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -584,12 +701,25 @@ export default function AdminCourses() {
                 <Button onClick={addModule} size="sm" className="w-full"><Plus className="w-4 h-4 mr-1"/>Add Module</Button>
                 {modules.map((mod, idx) => {
                   const isExp = expandedModules[mod.id];
+                  const isSequential = mod.sequential_lessons === true;
+                  const isModuleDragOver = dropTargetModuleIdx === idx;
+                  const isModuleDragging = draggedModuleIdx === idx;
                   return (
-                    <div key={mod.id} className="border rounded-xl overflow-hidden shadow-sm">
+                    <div key={mod.id}
+                      draggable={editingModuleId !== mod.id}
+                      onDragStart={(e) => handleModuleDragStart(e, idx)}
+                      onDragOver={(e) => handleModuleDragOver(e, idx)}
+                      onDrop={(e) => handleModuleDrop(e, idx)}
+                      onDragEnd={handleModuleDragEnd}
+                      onDragLeave={() => setDropTargetModuleIdx(null)}
+                      className={`border rounded-xl overflow-hidden shadow-sm transition-all ${isSequential ? 'ring-1 ring-indigo-200' : ''} ${isModuleDragging ? 'opacity-40' : ''} ${isModuleDragOver ? 'ring-2 ring-indigo-400 border-indigo-300' : 'hover:shadow-md'}`}
+                    >
                       <div className="flex items-center justify-between p-3 bg-gray-50 border-b">
                         <div className="flex items-center gap-2 flex-1">
+                          {/* Drag handle */}
+                          <GripVertical className={`w-4 h-4 flex-shrink-0 cursor-grab active:cursor-grabbing ${isModuleDragging ? 'text-indigo-500' : 'text-gray-300 hover:text-gray-500'}`} />
                           {editingModuleId === mod.id ? (
-                            <div className="flex gap-2 flex-1">
+                            <div className="flex gap-2 flex-1 items-center flex-wrap">
                               <Input value={moduleTitleInput} onChange={e => setModuleTitleInput(e.target.value)} className="h-8" placeholder="Module title"/>
                               <Input type="datetime-local" value={moduleDateInput} onChange={e => setModuleDateInput(e.target.value)} className="h-8" title="Unlock date (optional)"/>
                               <Button size="sm" onClick={() => saveModuleTitle(mod.id)}><Save className="w-4 h-4"/></Button>
@@ -600,19 +730,38 @@ export default function AdminCourses() {
                               {isExp ? <ChevronDown className="w-4 h-4"/> : <ChevronRight className="w-4 h-4"/>}
                               <span>{idx+1}. {mod.title}</span>
                               {mod.unlock_date && <span className="text-xs text-blue-500 font-normal">({new Date(mod.unlock_date).toLocaleDateString()})</span>}
+                              {isSequential && <Lock className="w-3.5 h-3.5 text-indigo-500" />}
                             </button>
                           )}
                         </div>
-                        <div className="flex items-center">
+                        <div className="flex items-center gap-1">
+                          {/* ✅ SEQUENTIAL LESSONS TOGGLE */}
+                          <div className="flex items-center gap-1.5 mr-1 px-2 py-1 rounded-lg bg-white border">
+                            <Lock className={`w-3 h-3 ${isSequential ? 'text-indigo-500' : 'text-gray-300'}`} />
+                            <Switch
+                              checked={isSequential}
+                              onCheckedChange={(checked) => toggleSequentialLessons(mod.id, checked)}
+                              className="scale-75 origin-right"
+                              title={isSequential ? 'Lessons must be completed in order' : 'All lessons are freely accessible'}
+                            />
+                          </div>
                           <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => moveModule(idx,'up')} disabled={idx===0}><ArrowUp className="w-3 h-3"/></Button>
                           <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => moveModule(idx,'down')} disabled={idx===modules.length-1}><ArrowDown className="w-3 h-3"/></Button>
-                          <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => {setEditingModuleId(mod.id);setModuleTitleInput(mod.title);setModuleDateInput(mod.unlock_date||'');}}><Pencil className="w-3 h-3"/></Button>
-                          <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => duplicateModule(mod)}><Copy className="w-3 h-3"/></Button>
-                          <Button variant="ghost" size="icon" className="w-7 h-7 text-red-500" onClick={() => deleteModule(mod.id)}><Trash2 className="w-3 h-3"/></Button>
+                          <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => {setEditingModuleId(mod.id);setModuleTitleInput(mod.title);setModuleDateInput(mod.unlock_date||'');setModuleSeqInput(mod.sequential_lessons||false);}} title="Edit module"><Pencil className="w-3 h-3"/></Button>
+                          <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => duplicateModule(mod)} title="Duplicate module"><Copy className="w-3 h-3"/></Button>
+                          <Button variant="ghost" size="icon" className="w-7 h-7 text-red-500" onClick={() => deleteModule(mod.id)} title="Delete module"><Trash2 className="w-3 h-3"/></Button>
                         </div>
                       </div>
                       {isExp && (
                         <div className="p-3 space-y-2">
+                          {/* ✅ Sequential banner when enabled */}
+                          {isSequential && (
+                            <div className="flex items-center gap-2 p-2.5 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700">
+                              <Lock className="w-4 h-4 flex-shrink-0" />
+                              <span className="font-medium">Sequential mode ON</span>
+                              <span className="text-indigo-500">— Students must complete each lesson in order to unlock the next one.</span>
+                            </div>
+                          )}
                           <div className="flex flex-wrap gap-1.5 mb-3">
                             {LESSON_TYPES.map(t => (
                               <Button key={t.value} variant="outline" size="sm" className="h-7 text-xs" onClick={() => addLesson(mod.id, t.value)}>
@@ -622,12 +771,26 @@ export default function AdminCourses() {
                           </div>
                           {(lessons[mod.id] || []).map((les, lIdx) => {
                             const Icon = LESSON_TYPES.find(l => l.value === les.type)?.icon || FileText;
+                            // Check if this lesson would be locked in sequential mode
+                            const isLockedBySeq = isSequential && lIdx > 0;
+                            const lessonKey = `${mod.id}:${lIdx}`;
+                            const isLessonDragOver = dropTargetLessonKey === lessonKey;
+                            const isLessonDragging = draggedLessonKey === lessonKey;
                             return (
-                              <div key={les.id} className={`flex items-center justify-between p-2 rounded-lg border text-sm ${les.type==='header'?'bg-indigo-50 font-bold border-indigo-200':'bg-white'}`}
+                              <div key={les.id}
+                                draggable
+                                onDragStart={(e) => handleLessonDragStart(e, mod.id, lIdx)}
+                                onDragOver={(e) => handleLessonDragOver(e, mod.id, lIdx)}
+                                onDrop={(e) => handleLessonDrop(e, mod.id, lIdx)}
+                                onDragEnd={handleLessonDragEnd}
+                                onDragLeave={() => setDropTargetLessonKey(null)}
+                                className={`flex items-center justify-between p-2 rounded-lg border text-sm transition-all cursor-grab active:cursor-grabbing ${les.type==='header'?'bg-indigo-50 font-bold border-indigo-200':'bg-white'} ${isLessonDragging ? 'opacity-40 scale-[0.98]' : ''} ${isLessonDragOver ? 'ring-2 ring-indigo-400 border-indigo-300 bg-indigo-50/50' : 'hover:border-gray-300'}`}
                                 style={{ marginLeft: `${(les.indent_level || 0) * 20}px` }}>
                                 <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <GripVertical className={`w-3.5 h-3.5 flex-shrink-0 cursor-grab active:cursor-grabbing ${isLessonDragging ? 'text-indigo-500' : 'text-gray-300 hover:text-gray-500'}`} />
                                   <Icon className={`w-4 h-4 flex-shrink-0 ${les.type==='quiz'?'text-amber-500':les.type==='survey'?'text-purple-500':les.type==='assignment'?'text-blue-500':'text-gray-500'}`}/>
                                   <span className="truncate">{les.title}</span>
+                                  {isLockedBySeq && <Lock className="w-3 h-3 text-indigo-400 flex-shrink-0" title="Will be locked until previous lesson is completed" />}
                                   {les.file_url && (
                                     <span className="flex items-center gap-0.5 flex-shrink-0">
                                       <Paperclip className="w-3 h-3 text-gray-400"/>
@@ -636,7 +799,7 @@ export default function AdminCourses() {
                                   )}
                                   {les.type === 'assignment' && les.assignment_config?.instructions && <span className="text-xs bg-blue-100 text-blue-600 px-1.5 rounded">has brief</span>}
                                 </div>
-                                <div className="flex items-center flex-shrink-0">
+                                <div className="flex items-center flex-shrink-0" onDragStart={e => e.preventDefault()}>
                                   <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => moveLesson(mod.id, lIdx, 'up')} disabled={lIdx===0}><ArrowUp className="w-3 h-3"/></Button>
                                   <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => moveLesson(mod.id, lIdx, 'down')} disabled={lIdx===(lessons[mod.id]?.length||0)-1}><ArrowDown className="w-3 h-3"/></Button>
                                   <Button variant="ghost" size="icon" className="w-7 h-7" onClick={() => duplicateLesson(les)}><Copy className="w-3 h-3"/></Button>

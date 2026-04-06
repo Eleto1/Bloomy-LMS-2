@@ -1,26 +1,41 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
 import {
-  ChevronLeft, ChevronRight, CheckCircle2, Lock, Menu, X,
-  FileText, Video, HelpCircle, Link as LinkIcon, LayoutDashboard,
-  ClipboardList, Paperclip, Download, ExternalLink, Star,
-  ChevronDown, Loader2, BookOpen, PlayCircle, AlertCircle,
-  Clock, Trophy, ArrowRight, RefreshCw, Info, Upload,
-  Send, FileUp, Globe, AlignLeft, Eye, XCircle
+  BookOpen, CheckCircle2, Lock as LockIcon, ChevronDown, ChevronRight,
+  Video, FileText, HelpCircle, ClipboardList, Link as LinkIcon,
+  LayoutDashboard, Loader2, ArrowLeft, ArrowRight, Download,
+  Upload, ExternalLink, Star, Send, AlertCircle, PlayCircle,
+  Trophy, Clock, MessageSquare, Paperclip, Eye, ShieldCheck,
+  Maximize2, X
 } from 'lucide-react';
 
-interface AssignmentConfig {
-  instructions: string;
-  instruction_type: 'text' | 'url' | 'file';
-  resource_url?: string;
-  allow_text: boolean;
-  allow_url: boolean;
-  allow_file: boolean;
-  due_note?: string;
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+interface Course {
+  id: string;
+  title: string;
+  description: string;
+  program: string;
+  status: string;
+}
+
+interface Module {
+  id: string;
+  title: string;
+  course_id: string;
+  order_index: number;
+  unlock_date?: string;
+  sequential_lessons?: boolean;
 }
 
 interface Lesson {
@@ -37,1054 +52,1650 @@ interface Lesson {
   assignment_config?: AssignmentConfig;
 }
 
-interface Module {
-  id: string;
-  title: string;
-  order_index: number;
-  unlock_date?: string;
-}
-
-interface LessonProgress {
-  lesson_id: string;
-  completed: boolean;
-  score?: number;
-  completed_at?: string;
-  time_spent?: number;
-}
-
-interface AssignmentSubmission {
-  lesson_id: string;
-  status: string;
-  submission_type: string;
-  content: string | null;
-  file_url: string | null;
-  score: number | null;
-  feedback: string | null;
-  submitted_at: string;
-  total_marks?: number | null;
-}
-
 interface QuizQuestion {
   q: string;
-  type: 'text' | 'multiple_choice' | 'rating';
+  type: string;
   a: string[];
   correct: number;
 }
 
-const LESSON_ICONS: Record<string, React.ElementType> = {
-  text: FileText,
-  video: Video,
-  quiz: HelpCircle,
-  url: LinkIcon,
-  header: LayoutDashboard,
-  survey: ClipboardList,
-  assignment: ClipboardList
-};
-
-function getYouTubeId(url: string) {
-  return url.match(/(?:youtube.com\/(?:watch?v=|embed\/)|youtu.be\/)([^&\n?#]+)/)?.[1] ?? null;
+interface AssignmentConfig {
+  instructions: string;
+  instruction_type: 'text' | 'url' | 'file';
+  resource_url?: string;
+  allow_text: boolean;
+  allow_url: boolean;
+  allow_file: boolean;
+  due_note?: string;
 }
 
-function formatTime(s: number) {
-  if (s < 60) return s + 's';
-  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
-  return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+interface SurveyResponse {
+  question: string;
+  answer: string;
+  type: string;
+  rating?: number;
 }
 
+interface LessonProgress {
+  lesson_id: string;
+  user_id: string;
+  completed: boolean;
+  completed_at: string;
+  score?: number;
+  time_spent?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Detect file type from URL
+// ─────────────────────────────────────────────────────────────────────────────
 function getFileType(url: string): 'pdf' | 'image' | 'video' | 'audio' | 'other' {
-  if (!url) return 'other';
-  const lower = url.toLowerCase().split('?')[0].split('#')[0];
+  const lower = url.toLowerCase().split('?')[0];
   if (lower.endsWith('.pdf')) return 'pdf';
-  if (/\.(png|jpg|jpeg|gif|bmp|webp|svg|ico)$/i.test(lower)) return 'image';
-  if (/\.(mp4|webm|ogg|mov|avi)$/i.test(lower)) return 'video';
-  if (/\.(mp3|wav|ogg|m4a|flac)$/i.test(lower)) return 'audio';
+  if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/.test(lower)) return 'image';
+  if (/\.(mp4|webm|ogg|mov|avi|m4v)$/.test(lower)) return 'video';
+  if (/\.(mp3|wav|ogg|flac|m4a|aac)$/.test(lower)) return 'audio';
   return 'other';
 }
 
-function getFileName(url: string): string {
-  if (!url) return 'File';
+function getFileExtension(url: string): string {
   try {
-    const parts = url.split('/');
-    const last = parts[parts.length - 1].split('?')[0].split('#')[0];
-    return decodeURIComponent(last) || 'File';
+    const path = new URL(url).pathname;
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    return ext;
   } catch {
-    return 'File';
+    const match = url.match(/\.([a-z0-9]+)(?:[?#]|$)/i);
+    return match ? match[1].toLowerCase() : 'file';
   }
 }
 
-function getPdfSrc(url: string, canDownload: boolean): string {
-  if (canDownload) return url;
-  const base = url.split('#')[0];
-  return base + '#toolbar=0&navpanes=0&scrollbar=0&statusbar=0';
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Google Docs Viewer URL (renders PDFs/docs without native download)
+// ─────────────────────────────────────────────────────────────────────────────
+function getGoogleDocsViewerUrl(originalUrl: string): string {
+  return `https://docs.google.com/gview?url=${encodeURIComponent(originalUrl)}&embedded=true`;
 }
 
-function FileViewerModal({ url, open, onClose, canDownload }: { url: string; open: boolean; onClose: () => void; canDownload: boolean }) {
-  const fileType = getFileType(url);
-  const fileName = getFileName(url);
-  const [loadError, setLoadError] = useState(false);
-  const [loading, setLoading] = useState(true);
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Secure iframe wrapper — blocks Google Docs Viewer toolbar buttons
+// (Print, Open as Doc, Pop-out) by overlaying a transparent blocker div
+// ─────────────────────────────────────────────────────────────────────────────
+function SecureViewerFrame({ src, title, height }: {
+  src: string; title: string; height: string;
+}) {
+  return (
+    <div className="relative rounded-xl overflow-hidden border bg-gray-50">
+      {/* The actual viewer */}
+      <iframe
+        src={src}
+        className="w-full border-0"
+        style={{ height }}
+        title={title}
+      />
+      {/* Transparent overlay that blocks Google Docs toolbar buttons.
+          Covers top 65px of the iframe where Print / Open / Pop-out live.
+          The rest of the document remains scrollable beneath. */}
+      <div
+        className="absolute top-0 left-0 right-0 z-10"
+        style={{ height: '65px', background: 'transparent' }}
+        title=""
+      />
+    </div>
+  );
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Fullscreen Modal Overlay (view-only, exit only via button or Escape)
+// ─────────────────────────────────────────────────────────────────────────────
+function FullscreenModal({ open, onClose, children, title }: {
+  open: boolean; onClose: () => void; children: React.ReactNode; title?: string;
+}) {
   useEffect(() => {
-    if (open) { setLoadError(false); setLoading(true); }
-  }, [open, url]);
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const handlePrint = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p') { e.preventDefault(); e.stopPropagation(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); e.stopPropagation(); }
+    };
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('keydown', handlePrint, true);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('keydown', handlePrint, true);
+      document.body.style.overflow = '';
+    };
+  }, [open, onClose]);
 
-  const iframeSrc = fileType === 'pdf' ? getPdfSrc(url, canDownload) : url;
-
-  const blockContextMenu = (e: React.MouseEvent) => {
-    if (!canDownload) e.preventDefault();
-  };
+  if (!open) return null;
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-5xl w-[95vw] h-[90vh] flex flex-col p-0 gap-0">
-        <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b bg-gray-50 flex-shrink-0 rounded-none">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            {fileType === 'pdf' && <FileText className="w-4 h-4 text-red-500 flex-shrink-0" />}
-            {fileType === 'image' && <Eye className="w-4 h-4 text-indigo-500 flex-shrink-0" />}
-            {fileType === 'video' && <Video className="w-4 h-4 text-purple-500 flex-shrink-0" />}
-            {fileType === 'audio' && <FileText className="w-4 h-4 text-amber-500 flex-shrink-0" />}
-            {fileType === 'other' && <FileText className="w-4 h-4 text-gray-500 flex-shrink-0" />}
-            <DialogTitle className="text-sm font-medium truncate">{fileName}</DialogTitle>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 font-medium uppercase flex-shrink-0">{fileType}</span>
-            {!canDownload && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium flex-shrink-0">View Only</span>
-            )}
-          </div>
-          {canDownload && (
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <a href={url} target="_blank" rel="noopener noreferrer" download>
-                <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1"><Download className="w-3 h-3" />Download</Button>
-              </a>
-              <a href={url} target="_blank" rel="noopener noreferrer">
-                <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1"><ExternalLink className="w-3 h-3" />New Tab</Button>
-              </a>
-            </div>
-          )}
-        </DialogHeader>
-        <div className="flex-1 overflow-hidden bg-gray-900 relative">
-          {loading && !loadError && (
-            <div className="absolute inset-0 flex items-center justify-center z-10">
-              <div className="flex flex-col items-center gap-2"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /><p className="text-xs text-gray-500">Loading file...</p></div>
-            </div>
-          )}
-          {loadError && (
-            <div className="absolute inset-0 flex items-center justify-center z-10">
-              <div className="flex flex-col items-center gap-3 text-center px-6">
-                <XCircle className="w-10 h-10 text-red-400" />
-                <p className="text-sm text-gray-300 font-medium">Unable to preview this file</p>
-                <p className="text-xs text-gray-500">Try downloading it instead.</p>
-                {canDownload && (
-                  <a href={url} target="_blank" rel="noopener noreferrer" download><Button size="sm" className="mt-2 gap-1.5"><Download className="w-3.5 h-3.5" />Download File</Button></a>
-                )}
-              </div>
-            </div>
-          )}
-          {fileType === 'pdf' && (
-            <iframe src={iframeSrc} className="w-full h-full border-0" title={fileName} onLoad={() => setLoading(false)} onError={() => { setLoading(false); setLoadError(true); }} />
-          )}
-          {fileType === 'image' && (
-            <div className="w-full h-full flex items-center justify-center p-4 overflow-auto" onContextMenu={blockContextMenu}>
-              <img src={url} alt={fileName} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl select-none" draggable={canDownload} onLoad={() => setLoading(false)} onError={() => { setLoading(false); setLoadError(true); }} />
-            </div>
-          )}
-          {fileType === 'video' && (
-            <div className="w-full h-full flex items-center justify-center p-4" onContextMenu={blockContextMenu}>
-              <video src={url} controls className="max-w-full max-h-full rounded-lg" controlsList={canDownload ? " " : "nodownload"} disablePictureInPicture={!canDownload} onLoadStart={() => setLoading(false)} onError={() => { setLoading(false); setLoadError(true); }} />
-            </div>
-          )}
-          {fileType === 'audio' && (
-            <div className="w-full h-full flex items-center justify-center" onContextMenu={blockContextMenu}>
-              <div className="bg-gray-800 rounded-2xl p-8 flex flex-col items-center gap-4 max-w-sm w-full">
-                <div className="w-20 h-20 bg-gray-700 rounded-full flex items-center justify-center"><FileText className="w-8 h-8 text-amber-400" /></div>
-                <p className="text-sm text-gray-300 font-medium text-center truncate max-w-full">{fileName}</p>
-                <audio src={url} controls className="w-full" controlsList={canDownload ? " " : "nodownload"} onLoadStart={() => setLoading(false)} onError={() => { setLoading(false); setLoadError(true); }} />
-              </div>
-            </div>
-          )}
-          {fileType === 'other' && (
-            <div className="w-full h-full flex items-center justify-center">
-              <div className="bg-gray-800 rounded-2xl p-8 flex flex-col items-center gap-4 max-w-sm w-full text-center">
-                <div className="w-20 h-20 bg-gray-700 rounded-full flex items-center justify-center"><FileText className="w-8 h-8 text-gray-400" /></div>
-                <p className="text-sm text-gray-300 font-medium">{fileName}</p>
-                <p className="text-xs text-gray-500">This file type cannot be previewed inline.</p>
-                {canDownload && (
-                  <a href={url} target="_blank" rel="noopener noreferrer" download><Button size="sm" className="gap-1.5"><Download className="w-3.5 h-3.5" />Download File</Button></a>
-                )}
-              </div>
-            </div>
-          )}
+    <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col">
+      {/* Top bar — only View label and Exit */}
+      <div className="flex items-center justify-between px-4 py-3 bg-gray-900/80 backdrop-blur-sm">
+        <div className="flex items-center gap-2">
+          <Eye className="w-4 h-4 text-gray-400" />
+          <span className="text-sm text-gray-300 font-medium truncate max-w-md">{title || 'View Only'}</span>
         </div>
-      </DialogContent>
-    </Dialog>
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition-colors"
+        >
+          <X className="w-4 h-4" />
+          Exit Fullscreen
+        </button>
+      </div>
+      {/* Content fills remaining space */}
+      <div className="flex-1 flex items-center justify-center overflow-hidden p-4">
+        {children}
+      </div>
+    </div>
   );
 }
 
-function FileAttachmentCard({ url, label, sublabel, canDownload }: {
-  url: string;
-  label: string;
-  sublabel?: string;
-  canDownload: boolean;
-}) {
-  const [viewerOpen, setViewerOpen] = useState(false);
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Embedded File Viewer (strict view-only when file_downloadable is false)
+// Students only get: VIEW and FULLSCREEN (view-only, no other options)
+// ─────────────────────────────────────────────────────────────────────────────
+function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: boolean }) {
   const fileType = getFileType(url);
-  const fileName = getFileName(url);
-  const canPreview = fileType === 'pdf' || fileType === 'image' || fileType === 'video' || fileType === 'audio';
+  const ext = getFileExtension(url).toUpperCase();
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
-  return (
-    <>
-      <div className="p-4 bg-gray-50 border-2 border-gray-100 rounded-2xl">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center flex-shrink-0">
-            {fileType === 'pdf' ? <FileText className="w-4 h-4 text-red-500" /> :
-             fileType === 'image' ? <Eye className="w-4 h-4 text-indigo-500" /> :
-             fileType === 'video' ? <Video className="w-4 h-4 text-purple-500" /> :
-             <Paperclip className="w-4 h-4 text-indigo-600" />}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-gray-800">{label}</p>
-            {sublabel && <p className="text-xs text-gray-500">{sublabel}</p>}
-            <p className="text-[11px] text-gray-400 truncate mt-0.5">{fileName}</p>
-          </div>
-          {!canDownload && (
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium flex-shrink-0">View Only</span>
-          )}
-        </div>
-        <div className="flex gap-2">
-          {canPreview && (
-            <Button size="sm" className="flex-1 gap-1.5 bg-indigo-600 hover:bg-indigo-700" onClick={() => setViewerOpen(true)}>
-              <Eye className="w-3.5 h-3.5" />View File
-            </Button>
-          )}
-          {canDownload && (
-            <a href={url} target="_blank" rel="noopener noreferrer" download className="flex-1">
-              <Button size="sm" variant="outline" className="w-full gap-1.5"><Download className="w-3.5 h-3.5" />Download</Button>
-            </a>
-          )}
-          {canPreview && !canDownload && (
-            <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setViewerOpen(true)}>
-              <Eye className="w-3.5 h-3.5" />View File
-            </Button>
-          )}
-          {!canPreview && canDownload && (
-            <a href={url} target="_blank" rel="noopener noreferrer" download className="flex-1">
-              <Button size="sm" variant="outline" className="w-full gap-1.5"><ExternalLink className="w-3.5 h-3.5" />Open</Button>
-            </a>
-          )}
-          {!canPreview && !canDownload && (
-            <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setViewerOpen(true)}>
-              <Eye className="w-3.5 h-3.5" />View File
-            </Button>
-          )}
-        </div>
-      </div>
-      <FileViewerModal url={url} open={viewerOpen} onClose={() => setViewerOpen(false)} canDownload={canDownload} />
-    </>
-  );
-}
-
-function QuizRenderer({ questions, existingScore, onComplete }: {
-  questions: QuizQuestion[];
-  existingScore?: number | null;
-  onComplete: (score: number) => Promise<void>;
-}) {
-  const [answers, setAnswers] = useState<Record<number, number | string>>({});
-  const [submitted, setSubmitted] = useState(existingScore !== null && existingScore !== undefined);
-  const [score, setScore] = useState<number>(existingScore ?? 0);
-  const [saving, setSaving] = useState(false);
-
-  if (!questions?.length) {
-    return (
-      <div className="flex items-center gap-2 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-        <AlertCircle className="w-4 h-4" />No questions found.
-      </div>
-    );
-  }
-
-  const handleSubmit = async () => {
-    let correct = 0;
-    let graded = 0;
-    questions.forEach((q, i) => {
-      if (q.type === 'multiple_choice') {
-        graded++;
-        if (answers[i] === q.correct) correct++;
+  // Block Ctrl+P / Ctrl+S / Cmd+P / Cmd+S globally when a view-only file is rendered
+  useEffect(() => {
+    if (canDownload) return;
+    const block = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's')) {
+        e.preventDefault();
+        e.stopPropagation();
       }
-    });
-    const pct = graded > 0 ? Math.round((correct / graded) * 100) : 100;
-    setSaving(true);
-    await onComplete(pct);
-    setScore(pct);
-    setSubmitted(true);
-    setSaving(false);
-  };
+    };
+    document.addEventListener('keydown', block, true);
+    return () => document.removeEventListener('keydown', block, true);
+  }, [canDownload]);
 
-  const getOptionStyle = (i: number, oi: number) => {
-    if (!submitted && answers[i] === oi) return 'bg-indigo-50 border-indigo-500 cursor-pointer';
-    if (submitted && oi === (questions[i]?.correct ?? -1)) return 'bg-emerald-50 border-emerald-400 cursor-default';
-    if (submitted && oi === answers[i] && oi !== (questions[i]?.correct ?? -1)) return 'bg-red-50 border-red-400 cursor-default';
-    return 'bg-gray-50 border-gray-200 hover:bg-indigo-50 cursor-pointer';
-  };
-
-  const getCircleStyle = (i: number, oi: number) => {
-    if (!submitted && answers[i] === oi) return 'border-indigo-500 bg-indigo-500 text-white';
-    if (submitted && oi === (questions[i]?.correct ?? -1)) return 'border-emerald-500 bg-emerald-500 text-white';
-    if (submitted && oi === answers[i]) return 'border-red-500 bg-red-500 text-white';
-    return 'border-gray-300 text-gray-500';
-  };
-
-  return (
-    <div className="space-y-6">
-      {submitted && (
-        <div className={score >= 70 ? 'p-5 rounded-2xl text-center border-2 bg-emerald-50 border-emerald-300' : 'p-5 rounded-2xl text-center border-2 bg-red-50 border-red-300'}>
-          <div className={score >= 70 ? 'text-4xl font-black mb-1 text-emerald-600' : 'text-4xl font-black mb-1 text-red-500'}>{score}%</div>
-          <p className={score >= 70 ? 'font-semibold text-emerald-700' : 'font-semibold text-red-600'}>
-            {score >= 70 ? '🎉 Passed!' : '😟 Below 70%'}
-          </p>
-          {score < 70 && (
-            <Button size="sm" variant="outline" className="mt-3 border-red-300 text-red-600" onClick={() => { setSubmitted(false); setAnswers({}); setScore(0); }}>
-              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />Retake
-            </Button>
-          )}
-        </div>
-      )}
-      {questions.map((q, i) => (
-        <div key={i} className="bg-white border rounded-2xl p-5 shadow-sm">
-          <p className="font-semibold text-gray-900 mb-4 leading-relaxed">
-            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold mr-2">
-              {i + 1}
-            </span>
-            {q.q}
-          </p>
-          {q.type === 'multiple_choice' && (
-            <div className="space-y-2">
-              {(q.a || []).filter(Boolean).map((opt, oi) => (
-                <button key={oi} disabled={submitted} onClick={() => setAnswers(prev => ({ ...prev, [i]: oi }))} className={'w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-sm transition-all ' + getOptionStyle(i, oi)}>
-                  <span className={'w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 ' + getCircleStyle(i, oi)}>
-                    {String.fromCharCode(65 + oi)}
-                  </span>
-                  {opt}
-                  {submitted && oi === q.correct && <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />}
-                </button>
-              ))}
-              {submitted && answers[i] !== undefined && answers[i] !== q.correct && q.a?.[q.correct] && (
-                <p className="text-xs text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg">
-                  ✓ Correct: <strong>{q.a[q.correct]}</strong>
-                </p>
-              )}
-            </div>
-          )}
-          {q.type === 'text' && (
-            <textarea className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm resize-none focus:outline-none focus:border-indigo-400" rows={4} placeholder="Type your answer..." disabled={submitted} onChange={e => setAnswers(prev => ({ ...prev, [i]: e.target.value }))} />
-          )}
-        </div>
-      ))}
-      {!submitted && (
-        <Button onClick={handleSubmit} disabled={Object.keys(answers).length < questions.length || saving} className="w-full bg-indigo-600 hover:bg-indigo-700 h-12 text-base font-semibold">
-          {saving ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Submitting...</> : 'Submit Quiz'}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-function SurveyRenderer({ questions, alreadySubmitted, onComplete }: {
-  questions: QuizQuestion[];
-  alreadySubmitted: boolean;
-  onComplete: (answers: Record<number, any>, rating: number | null) => Promise<void>;
-}) {
-  const [answers, setAnswers] = useState<Record<number, any>>({});
-  const [submitted, setSubmitted] = useState(alreadySubmitted);
-  const [saving, setSaving] = useState(false);
-  const [hovered, setHovered] = useState<Record<number, number>>({});
-
-  if (!questions?.length) {
-    return (
-      <div className="flex items-center gap-2 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-        <AlertCircle className="w-4 h-4" />No questions.
-      </div>
-    );
-  }
-
-  const handleSubmit = async () => {
-    const rv = questions
-      .map((q, i) => q.type === 'rating' ? Number(answers[i]) : null)
-      .filter((v): v is number => v !== null && !isNaN(v));
-    const avgR = rv.length > 0 ? Math.round((rv.reduce((a, b) => a + b, 0) / rv.length) * 10) / 10 : null;
-    setSaving(true);
-    await onComplete(answers, avgR);
-    setSubmitted(true);
-    setSaving(false);
-  };
-
-  if (submitted) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 gap-4">
-        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center">
-          <CheckCircle2 className="w-8 h-8 text-emerald-600" />
-        </div>
-        <h3 className="text-xl font-bold text-gray-800">Thank you for your feedback!</h3>
-        <p className="text-gray-500 text-sm">Your response has been recorded.</p>
-      </div>
-    );
-  }
-
-  const allAnswered = questions.every((q, i) =>
-    q.type === 'text' ? (answers[i] || '').trim().length > 0 : answers[i] !== undefined
-  );
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-sm">
-        <Info className="w-4 h-4 flex-shrink-0" />Your feedback is anonymous.
-      </div>
-      {questions.map((q, i) => (
-        <div key={i} className="bg-white border-2 border-gray-100 rounded-2xl p-5 shadow-sm">
-          <p className="font-semibold text-gray-900 mb-4">
-            <span className="text-indigo-500 mr-1">{i + 1}.</span>{q.q}
-          </p>
-          {q.type === 'rating' && (
-            <div className="flex gap-2 items-center">
-              {[1, 2, 3, 4, 5].map(r => (
-                <button key={r} onClick={() => setAnswers(prev => ({ ...prev, [i]: r }))} onMouseEnter={() => setHovered(prev => ({ ...prev, [i]: r }))} onMouseLeave={() => setHovered(prev => ({ ...prev, [i]: 0 }))} className="transition-transform hover:scale-110">
-                  <Star className={r <= (hovered[i] || answers[i] || 0) ? 'w-9 h-9 transition-colors text-amber-400 fill-amber-400' : 'w-9 h-9 transition-colors text-gray-200'} />
-                </button>
-              ))}
-              {answers[i] && (
-                <span className="text-sm text-gray-600 ml-2 font-medium">
-                  {['', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'][answers[i]]}
-                </span>
-              )}
-            </div>
-          )}
-          {q.type === 'multiple_choice' && (
-            <div className="space-y-2">
-              {(q.a || []).filter(Boolean).map((opt, oi) => (
-                <button key={oi} onClick={() => setAnswers(prev => ({ ...prev, [i]: oi }))} className={answers[i] === oi ? 'w-full text-left px-4 py-3 rounded-xl border-2 text-sm transition-all bg-indigo-50 border-indigo-500 text-indigo-800' : 'w-full text-left px-4 py-3 rounded-xl border-2 text-sm transition-all bg-gray-50 border-gray-200 hover:border-indigo-200'}>
-                  <span className="font-medium mr-2">{String.fromCharCode(65 + oi)}.</span>{opt}
-                </button>
-              ))}
-            </div>
-          )}
-          {q.type === 'text' && (
-            <textarea className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm resize-none focus:outline-none focus:border-indigo-400" rows={4} placeholder="Share your thoughts..." value={answers[i] || ''} onChange={e => setAnswers(prev => ({ ...prev, [i]: e.target.value }))} />
-          )}
-        </div>
-      ))}
-      <Button onClick={handleSubmit} disabled={!allAnswered || saving} className="w-full bg-indigo-600 hover:bg-indigo-700 h-12 text-base font-semibold">
-        {saving ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Submitting...</> : 'Submit Feedback'}
-      </Button>
-    </div>
-  );
-}
-
-function AssignmentRenderer({ lesson, userId, existingSub, onComplete }: {
-  lesson: Lesson;
-  userId: string;
-  existingSub: AssignmentSubmission | null;
-  onComplete: () => Promise<void>;
-}) {
-  const config = lesson.assignment_config;
-  const hasConfig = !!config;
-  const defaultSubType = hasConfig ? (config.allow_text ? 'text' : config.allow_url ? 'url' : 'file') : 'text';
-  const [subType, setSubType] = useState<'text' | 'url' | 'file'>(defaultSubType);
-  const [textInput, setTextInput] = useState('');
-  const [urlInput, setUrlInput] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(!!existingSub);
-  const { toast } = useToast();
-
-  const instructionsText = hasConfig && config.instructions ? config.instructions : lesson.content || '';
-  const showResourceUrl = hasConfig && config.instruction_type === 'url' && config.resource_url;
-  const showFileDownload = hasConfig && config.instruction_type === 'file' && lesson.file_url && lesson.file_downloadable !== false;
-  const showLegacyFile = !hasConfig && lesson.file_url && lesson.file_downloadable !== false;
-  const canText = !hasConfig || config.allow_text;
-  const canUrl = !hasConfig || config.allow_url;
-  const canFile = !hasConfig || config.allow_file;
-
-  const handleSubmit = async () => {
-    if (subType === 'text' && !textInput.trim()) return toast({ title: 'Please write your answer', variant: 'destructive' });
-    if (subType === 'url' && !urlInput.trim()) return toast({ title: 'Please enter a URL', variant: 'destructive' });
-    if (subType === 'file' && !file) return toast({ title: 'Please select a file', variant: 'destructive' });
-    setSubmitting(true);
-    try {
-      let fileUrl: string | null = null;
-      if (subType === 'file' && file) {
-        setUploading(true);
-        const safeName = file.name.replace(/[^a-zA-Z0-9.*-]/g, '*').replace(/\/+/g, '*');
-        const path = 'assignments/' + userId + '/' + lesson.id + '/' + Date.now() + '_' + safeName;
-        const { error: upErr } = await supabase.storage.from('course-files').upload(path, file);
-        if (upErr) throw upErr;
-        const { data: ud } = supabase.storage.from('course-files').getPublicUrl(path);
-        fileUrl = ud.publicUrl;
-        setUploading(false);
-      }
-      const submissionPayload: Record<string, any> = {
-        user_id: userId,
-        lesson_id: lesson.id,
-        submission_type: subType,
-        file_url: fileUrl,
-        status: 'submitted',
-        submitted_at: new Date().toISOString(),
-        score: 0,
-        feedback: '',
-        total_marks: 0,
-      };
-      if (subType === 'text') submissionPayload.content = textInput;
-      if (subType === 'url') submissionPayload.content = urlInput;
-      const { error } = await supabase.from('assignment_submissions').upsert(submissionPayload, { onConflict: 'user_id,lesson_id' });
-      if (error) throw error;
-      await onComplete();
-      setSubmitted(true);
-      toast({ title: '✓ Assignment submitted!' });
-    } catch (e: any) {
-      toast({ title: 'Submission failed', description: e.message, variant: 'destructive' });
-    } finally {
-      setSubmitting(false);
-      setUploading(false);
-    }
-  };
-
-  if (submitted || existingSub) {
-    const sub = existingSub;
-    return (
-      <div className="space-y-5">
-        {instructionsText && (
-          <div className="bg-white border rounded-2xl p-6 shadow-sm">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Assignment Instructions</p>
-            <div className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{instructionsText}</div>
+  // ── Action bar: only VIEW and FULLSCREEN buttons ───────────────────────
+  const ActionBar = () => (
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        {canDownload ? (
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+            <Download className="w-3.5 h-3.5 text-indigo-600" />
+            <span className="text-xs text-indigo-700 font-medium">Download enabled</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+            <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+            <span className="text-xs text-amber-700 font-medium">View only — no download</span>
           </div>
         )}
-        {showResourceUrl && (
-          <a href={config!.resource_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 p-4 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors">
-            <Globe className="w-5 h-5 text-indigo-600 flex-shrink-0" />
-            <div><p className="text-sm font-semibold text-indigo-700">Open Assignment Brief</p></div>
+      </div>
+      <div className="flex items-center gap-2">
+        {/* Fullscreen (always available — view only inside) */}
+        <button
+          onClick={() => setIsFullscreen(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-200 transition-colors"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+          Fullscreen
+        </button>
+        {/* Download button (only when instructor allows) */}
+        {canDownload && (
+          <a
+            href={url}
+            download
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700 hover:bg-indigo-100 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download File
           </a>
         )}
-        {(showFileDownload || showLegacyFile) && (
-          <FileAttachmentCard url={lesson.file_url!} label="Assignment File" sublabel="Attached resource" canDownload={true} />
-        )}
-        {!showFileDownload && !showLegacyFile && hasConfig && config!.instruction_type === 'file' && lesson.file_url && lesson.file_downloadable === false && (
-          <FileAttachmentCard url={lesson.file_url!} label="Assignment File" sublabel="Attached resource (view only)" canDownload={false} />
-        )}
-        <div className="p-5 bg-emerald-50 border-2 border-emerald-200 rounded-2xl">
-          <div className="flex items-center gap-2 mb-3">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-            <p className="font-semibold text-emerald-800">Assignment Submitted</p>
-            {sub && <span className="text-xs text-emerald-600 ml-auto">{new Date(sub.submitted_at).toLocaleDateString()}</span>}
+      </div>
+    </div>
+  );
+
+  // ──── PDF ────────────────────────────────────────────────────────────────
+  // When download OFF: Google Docs Viewer + toolbar blocker overlay
+  // When download ON: direct URL in iframe (browser native viewer)
+  if (fileType === 'pdf') {
+    const viewerSrc = canDownload ? url : getGoogleDocsViewerUrl(url);
+    return (
+      <div className="space-y-3">
+        <ActionBar />
+        {canDownload ? (
+          <div className="rounded-xl overflow-hidden border bg-gray-50">
+            <iframe src={url} className="w-full border-0" style={{ height: '700px' }} title="PDF viewer" />
           </div>
-          {sub && (
-            <div className="space-y-2">
-              {sub.submission_type === 'text' && sub.content && (
-                <div className="bg-white rounded-xl p-3 border text-sm text-gray-700 whitespace-pre-wrap">{sub.content}</div>
-              )}
-              {sub.submission_type === 'url' && sub.content && (
-                <a href={sub.content} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-indigo-600 underline text-sm">
-                  <Globe className="w-4 h-4" />{sub.content}
-                </a>
-              )}
-              {sub.submission_type === 'file' && sub.file_url && (
-                <FileAttachmentCard url={sub.file_url} label="Your Submitted File" canDownload={true} />
-              )}
+        ) : (
+          <SecureViewerFrame src={viewerSrc} title="PDF viewer (view only)" height="700px" />
+        )}
+        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="PDF — View Only">
+          {canDownload ? (
+            <iframe src={url} className="w-full h-full border-0 rounded-lg" title="PDF viewer" />
+          ) : (
+            <div className="relative w-full h-full rounded-lg overflow-hidden">
+              <iframe src={viewerSrc} className="w-full h-full border-0" title="PDF viewer fullscreen" />
+              <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
             </div>
           )}
-          {sub?.score !== null && sub?.score !== undefined && sub.score > 0 && (
-            <div className="mt-3 pt-3 border-t border-emerald-200">
-              <div className="flex items-center gap-3">
-                <div className={sub.score >= 70 ? 'px-3 py-1.5 rounded-lg font-bold text-sm bg-emerald-600 text-white' : 'px-3 py-1.5 rounded-lg font-bold text-sm bg-red-500 text-white'}>{sub.score}%</div>
-                <span className="text-emerald-700 text-sm font-medium">Graded</span>
-              </div>
-              {sub.feedback && (
-                <div className="mt-2 p-3 bg-white rounded-xl border text-sm text-gray-600">
-                  <span className="font-semibold text-gray-700">Feedback: </span>{sub.feedback}
-                </div>
-              )}
-            </div>
-          )}
-          {sub && (sub.score === null || sub.score === 0) && <p className="mt-2 text-xs text-emerald-600">⏳ Awaiting instructor grade</p>}
-        </div>
+        </FullscreenModal>
       </div>
     );
   }
 
+  // ──── Image ─────────────────────────────────────────────────────────────
+  if (fileType === 'image') {
+    return (
+      <div className="space-y-3">
+        <ActionBar />
+        <div
+          className="rounded-xl overflow-hidden border bg-gray-50 p-2"
+          onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+          style={canDownload ? undefined : { userSelect: 'none' as const }}
+        >
+          <img
+            src={url}
+            alt="Lesson attachment"
+            className="max-w-full max-h-[500px] mx-auto rounded-lg object-contain pointer-events-none"
+            draggable={false}
+            style={{ WebkitUserSelect: 'none' as const, userDrag: 'none' as const }}
+          />
+        </div>
+        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="Image — View Only">
+          <div
+            className="relative"
+            onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+            style={canDownload ? undefined : { userSelect: 'none' as const }}
+          >
+            <img
+              src={url}
+              alt="Lesson attachment"
+              className="max-w-full max-h-full object-contain rounded-lg pointer-events-none"
+              draggable={false}
+              style={{ WebkitUserSelect: 'none' as const, userDrag: 'none' as const }}
+            />
+          </div>
+        </FullscreenModal>
+      </div>
+    );
+  }
+
+  // ──── Video ──────────────────────────────────────────────────────────────
+  if (fileType === 'video') {
+    return (
+      <div className="space-y-3">
+        <ActionBar />
+        <div className="aspect-video rounded-xl overflow-hidden bg-gray-900">
+          <video
+            src={url}
+            controls
+            controlsList={canDownload ? undefined : 'nodownload noremoteplayback'}
+            disablePictureInPicture={!canDownload}
+            disableRemotePlayback={!canDownload}
+            onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+            className="w-full h-full"
+          />
+        </div>
+        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="Video — View Only">
+          <div className="w-full h-full flex items-center justify-center">
+            <video
+              src={url}
+              controls
+              controlsList={canDownload ? undefined : 'nodownload noremoteplayback'}
+              disablePictureInPicture={!canDownload}
+              disableRemotePlayback={!canDownload}
+              onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+              className="max-w-full max-h-full rounded-lg"
+              autoPlay
+            />
+          </div>
+        </FullscreenModal>
+      </div>
+    );
+  }
+
+  // ──── Audio ──────────────────────────────────────────────────────────────
+  if (fileType === 'audio') {
+    return (
+      <div className="space-y-3">
+        <ActionBar />
+        <div className="p-4 bg-gray-50 border rounded-xl">
+          <audio
+            src={url}
+            controls
+            controlsList={canDownload ? undefined : 'nodownload'}
+            onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+            className="w-full"
+          />
+        </div>
+        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="Audio — View Only">
+          <div className="w-full max-w-xl p-8">
+            <audio
+              src={url}
+              controls
+              controlsList={canDownload ? undefined : 'nodownload'}
+              onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+              className="w-full"
+              autoPlay
+            />
+          </div>
+        </FullscreenModal>
+      </div>
+    );
+  }
+
+  // ──── Other files (doc, ppt, xls, etc) ─────────────────────────────────
+  const viewerSrc = canDownload ? url : getGoogleDocsViewerUrl(url);
   return (
-    <div className="space-y-6">
-      {instructionsText && (
-        <div className="bg-white border rounded-2xl p-6 shadow-sm">
-          <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">Assignment Instructions</p>
-          <div className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{instructionsText}</div>
+    <div className="space-y-3">
+      <ActionBar />
+      {canDownload ? (
+        <div className="rounded-xl border bg-gray-50 overflow-hidden">
+          <iframe src={url} className="w-full border-0" style={{ height: '600px' }} title={`File viewer (${ext})`} />
         </div>
+      ) : (
+        <SecureViewerFrame src={viewerSrc} title={`File viewer (${ext})`} height="600px" />
       )}
-      {showResourceUrl && (
-        <a href={config!.resource_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 p-4 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors">
-          <Globe className="w-5 h-5 text-indigo-600 flex-shrink-0" />
-          <div><p className="text-sm font-semibold text-indigo-700">Open Assignment Brief</p></div>
-        </a>
-      )}
-      {(showFileDownload || showLegacyFile) && (
-        <FileAttachmentCard url={lesson.file_url!} label="Assignment File" sublabel="Download or view the attached resource" canDownload={true} />
-      )}
-      {!showFileDownload && !showLegacyFile && hasConfig && config!.instruction_type === 'file' && lesson.file_url && lesson.file_downloadable === false && (
-        <FileAttachmentCard url={lesson.file_url!} label="Assignment File" sublabel="View the attached resource" canDownload={false} />
-      )}
-      {hasConfig && config!.due_note && (
-        <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-          <Clock className="w-4 h-4 flex-shrink-0" />
-          <span className="font-medium">{config!.due_note}</span>
-        </div>
-      )}
-      <div>
-        <p className="text-sm font-bold text-gray-700 mb-3">Submit Your Work</p>
-        <div className="grid grid-cols-3 gap-2 mb-4">
-          {canText && (
-            <button onClick={() => setSubType('text')} className={subType === 'text' ? 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-indigo-50 border-indigo-500 text-indigo-700' : 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-gray-50 border-gray-200 text-gray-600 hover:border-indigo-200'}>
-              <AlignLeft className="w-5 h-5" />
-              <span className="text-xs font-medium">Write Text</span>
-            </button>
-          )}
-          {canUrl && (
-            <button onClick={() => setSubType('url')} className={subType === 'url' ? 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-indigo-50 border-indigo-500 text-indigo-700' : 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-gray-50 border-gray-200 text-gray-600 hover:border-indigo-200'}>
-              <Globe className="w-5 h-5" />
-              <span className="text-xs font-medium">Submit a Link</span>
-            </button>
-          )}
-          {canFile && (
-            <button onClick={() => setSubType('file')} className={subType === 'file' ? 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-indigo-50 border-indigo-500 text-indigo-700' : 'flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all bg-gray-50 border-gray-200 text-gray-600 hover:border-indigo-200'}>
-              <FileUp className="w-5 h-5" />
-              <span className="text-xs font-medium">Upload File</span>
-            </button>
-          )}
-        </div>
-        {subType === 'text' && (
-          <textarea className="w-full border-2 border-gray-200 rounded-xl p-4 text-sm resize-none focus:outline-none focus:border-indigo-400" rows={8} placeholder="Write your assignment answer here..." value={textInput} onChange={e => setTextInput(e.target.value)} />
-        )}
-        {subType === 'url' && (
-          <div>
-            <div className="relative">
-              <Globe className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-              <input type="url" placeholder="https://..." className="w-full border-2 border-gray-200 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-indigo-400" value={urlInput} onChange={e => setUrlInput(e.target.value)} />
-            </div>
-            <p className="text-xs text-gray-400 mt-1">Google Drive, GitHub, Notion, etc.</p>
+      <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title={`${ext} — View Only`}>
+        {canDownload ? (
+          <iframe src={url} className="w-full h-full border-0 rounded-lg" title={`File viewer (${ext})`} />
+        ) : (
+          <div className="relative w-full h-full rounded-lg overflow-hidden">
+            <iframe src={viewerSrc} className="w-full h-full border-0" title={`File viewer fullscreen (${ext})`} />
+            <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
           </div>
         )}
-        {subType === 'file' && (
-          <label className={file ? 'flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all border-indigo-400 bg-indigo-50' : 'flex flex-col items-center justify-center gap-3 p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all border-gray-200 hover:border-indigo-300'}>
-            <input type="file" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />
-            {file ? (
-              <>
-                <FileText className="w-8 h-8 text-indigo-500" />
-                <p className="text-sm font-medium text-indigo-700">{file.name}</p>
-                <p className="text-xs text-gray-400">{(file.size / 1024).toFixed(1)} KB · Click to change</p>
-              </>
-            ) : (
-              <>
-                <Upload className="w-8 h-8 text-gray-300" />
-                <p className="text-sm font-medium text-gray-500">Click to select a file</p>
-                <p className="text-xs text-gray-400">PDF, DOC, ZIP, images etc.</p>
-              </>
-            )}
-          </label>
-        )}
-      </div>
-      <Button onClick={handleSubmit} disabled={submitting} className="w-full bg-indigo-600 hover:bg-indigo-700 h-12 text-base font-semibold">
-        {uploading ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Uploading...</> : submitting ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Submitting...</> : <><Send className="w-4 h-4 mr-2" />Submit Assignment</>}
-      </Button>
+      </FullscreenModal>
     </div>
   );
 }
 
-export default function StudentLearn() {
-  const { courseId } = useParams<{ courseId: string }>();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const { toast } = useToast();
-  const startedAt = useRef<Date>(new Date());
-  const contentRef = useRef<HTMLDivElement>(null);
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Get icon for lesson type
+// ─────────────────────────────────────────────────────────────────────────────
+function getLessonIcon(type: string) {
+  switch (type) {
+    case 'video': return Video;
+    case 'quiz': return HelpCircle;
+    case 'survey': return ClipboardList;
+    case 'assignment': return ClipboardList;
+    case 'url': return LinkIcon;
+    case 'header': return LayoutDashboard;
+    default: return FileText;
+  }
+}
 
+function getLessonIconColor(type: string) {
+  switch (type) {
+    case 'video': return 'text-blue-500';
+    case 'quiz': return 'text-amber-500';
+    case 'survey': return 'text-purple-500';
+    case 'assignment': return 'text-blue-500';
+    case 'url': return 'text-teal-500';
+    case 'header': return 'text-gray-400';
+    default: return 'text-gray-500';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
+export default function StudentCourseViewer() {
+  const { courseId } = useParams<{ courseId: string }>();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { toast } = useToast();
+
+  // ── State ────────────────────────────────────────────────────────────────
+  const [course, setCourse] = useState<Course | null>(null);
   const [modules, setModules] = useState<Module[]>([]);
-  const [lessons, setLessons] = useState<Record<string, Lesson[]>>({});
+  const [allLessons, setAllLessons] = useState<Lesson[]>([]);
   const [progress, setProgress] = useState<LessonProgress[]>([]);
-  const [submittedSurveys, setSubmittedSurveys] = useState<Set<string>>(new Set());
-  const [assignmentSubs, setAssignmentSubs] = useState<Record<string, AssignmentSubmission>>({});
-  const [activeLesson, setActiveLesson] = useState<Lesson | null>(null);
-  const [userId, setUserId] = useState('');
-  const [courseTitle, setCourseTitle] = useState('');
+
+  const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
+  const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [marking, setMarking] = useState(false);
 
-  useEffect(() => { fetchData(); }, [courseId]);
+  // Quiz state
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizScore, setQuizScore] = useState<number | null>(null);
+  const [quizPassing, setQuizPassing] = useState(false);
 
-  const fetchData = async () => {
+  // Survey state
+  const [surveyResponses, setSurveyResponses] = useState<SurveyResponse[]>([]);
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
+
+  // Assignment state
+  const [assignText, setAssignText] = useState('');
+  const [assignUrl, setAssignUrl] = useState('');
+  const [assignFile, setAssignFile] = useState<File | null>(null);
+  const [assignUploading, setAssignUploading] = useState(false);
+  const [assignSubmitted, setAssignSubmitted] = useState(false);
+  const [assignExistingSubmission, setAssignExistingSubmission] = useState<any>(null);
+
+  // Refs
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+  const lessonsByModule = useMemo(() => {
+    const map: Record<string, Lesson[]> = {};
+    allLessons.forEach(l => {
+      if (!map[l.module_id]) map[l.module_id] = [];
+      map[l.module_id].push(l);
+    });
+    // Sort each module's lessons by order_index
+    Object.keys(map).forEach(modId => {
+      map[modId].sort((a, b) => a.order_index - b.order_index);
+    });
+    return map;
+  }, [allLessons]);
+
+  const completedIds = useMemo(() => {
+    return new Set(
+      progress
+        .filter(p => p.completed)
+        .map(p => p.lesson_id)
+    );
+  }, [progress]);
+
+  // All non-header lessons across all modules (for sequential lock logic)
+  const nonHeadersByModule = useMemo(() => {
+    const map: Record<string, Lesson[]> = {};
+    Object.entries(lessonsByModule).forEach(([modId, lessons]) => {
+      map[modId] = lessons.filter(l => l.type !== 'header');
+    });
+    return map;
+  }, [lessonsByModule]);
+
+  // ── isLessonLocked: Respects sequential_lessons flag ──────────────────────
+  const isLessonLocked = useCallback((lesson: Lesson): boolean => {
+    // Headers are never locked
+    if (lesson.type === 'header') return false;
+
+    // Find the module this lesson belongs to
+    const mod = modules.find(m => m.id === lesson.module_id);
+    if (!mod) return false;
+
+    // Module-level unlock date always applies regardless of sequential setting
+    if (mod.unlock_date && new Date(mod.unlock_date) > new Date()) return true;
+
+    // ✅ KEY FIX: Only enforce sequential order if sequential_lessons is enabled
+    if (!mod.sequential_lessons) return false;
+
+    // Sequential mode is ON — find this lesson's index among non-header lessons
+    const moduleNonHeaders = nonHeadersByModule[mod.id] || [];
+    const idx = moduleNonHeaders.findIndex(l => l.id === lesson.id);
+
+    // First lesson is always unlocked
+    if (idx <= 0) return false;
+
+    // Check if the previous lesson is completed
+    const previousLesson = moduleNonHeaders[idx - 1];
+    return !completedIds.has(previousLesson.id);
+  }, [modules, nonHeadersByModule, completedIds]);
+
+  // Helper: check if a module is locked (unlock date not reached)
+  const isModuleLocked = useCallback((mod: Module): boolean => {
+    if (mod.unlock_date && new Date(mod.unlock_date) > new Date()) return true;
+    return false;
+  }, []);
+
+  // Overall progress percentage
+  const overallProgress = useMemo(() => {
+    if (allLessons.length === 0) return 0;
+    const completableLessons = allLessons.filter(l => l.type !== 'header');
+    if (completableLessons.length === 0) return 0;
+    const completedCount = completableLessons.filter(l => completedIds.has(l.id)).length;
+    return Math.round((completedCount / completableLessons.length) * 100);
+  }, [allLessons, completedIds]);
+
+  // Active lesson object
+  const activeLesson = useMemo(() => {
+    if (!activeLessonId) return null;
+    return allLessons.find(l => l.id === activeLessonId) || null;
+  }, [activeLessonId, allLessons]);
+
+  // ── Load Data ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (courseId && user) loadData();
+  }, [courseId, user]);
+
+  const loadData = async () => {
+    if (!courseId || !user) return;
     setLoading(true);
+
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || !courseId) return;
-      setUserId(user.id);
+      // Fetch course
+      const { data: courseData, error: courseErr } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('id', courseId)
+        .single();
 
-      const { data: cd } = await supabase.from('courses').select('title').eq('id', courseId).single();
-      if (cd) setCourseTitle(cd.title);
+      if (courseErr) throw courseErr;
+      if (courseData) setCourse(courseData);
 
-      const { data: mods } = await supabase.from('modules').select('*').eq('course_id', courseId).order('order_index');
-      setModules(mods || []);
-      if (!mods?.length) { setLoading(false); return; }
+      // Fetch modules (select('*') includes sequential_lessons automatically)
+      const { data: modsData, error: modsErr } = await supabase
+        .from('modules')
+        .select('*')
+        .eq('course_id', courseId)
+        .order('order_index');
 
-      const initExp: Record<string, boolean> = {};
-      mods.forEach(m => { initExp[m.id] = true; });
-      setExpanded(initExp);
+      if (modsErr) throw modsErr;
+      if (modsData) {
+        setModules(modsData);
 
-      const { data: lessData } = await supabase.from('lessons').select('*').in('module_id', mods.map(m => m.id)).order('order_index');
-      const map: Record<string, Lesson[]> = {};
-      (lessData || []).forEach(l => { if (!map[l.module_id]) map[l.module_id] = []; map[l.module_id].push(l); });
-      setLessons(map);
+        // Fetch all lessons for these modules
+        const modIds = modsData.map(m => m.id);
+        if (modIds.length > 0) {
+          const { data: lessData, error: lessErr } = await supabase
+            .from('lessons')
+            .select('*')
+            .in('module_id', modIds)
+            .order('order_index');
 
-      const { data: prog } = await supabase.from('lesson_progress').select('*').eq('user_id', user.id);
-      const progData = prog || [];
-      setProgress(progData);
+          if (lessErr) throw lessErr;
+          if (lessData) setAllLessons(lessData);
 
-      const surveyIds = (lessData || []).filter(l => l.type === 'survey').map(l => l.id);
-      if (surveyIds.length > 0) {
-        const { data: sr } = await supabase.from('survey_responses').select('lesson_id').eq('user_id', user.id).in('lesson_id', surveyIds);
-        setSubmittedSurveys(new Set((sr || []).map(r => r.lesson_id)));
+          // Expand first module by default
+          if (modsData.length > 0) {
+            const firstModuleWithLessons = modsData.find(m =>
+              lessData?.some(l => l.module_id === m.id)
+            );
+            if (firstModuleWithLessons) {
+              setExpandedModules({ [firstModuleWithLessons.id]: true });
+
+              // Set first non-header lesson as active
+              const firstLesson = lessData.find(
+                l => l.module_id === firstModuleWithLessons.id && l.type !== 'header'
+              );
+              if (firstLesson) setActiveLessonId(firstLesson.id);
+            }
+          }
+        }
       }
 
-      const assignIds = (lessData || []).filter(l => l.type === 'assignment').map(l => l.id);
-      if (assignIds.length > 0) {
-        const { data: ar } = await supabase.from('assignment_submissions').select('*').eq('user_id', user.id).in('lesson_id', assignIds);
-        const am: Record<string, AssignmentSubmission> = {};
-        (ar || []).forEach(a => { am[a.lesson_id] = a; });
-        setAssignmentSubs(am);
-      }
+      // Fetch progress for this user
+      const { data: progData, error: progErr } = await supabase
+        .from('lesson_progress')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('course_id', courseId);
 
-      const reqId = searchParams.get('lesson');
-      const allLes = lessData || [];
-      const nonH = allLes.filter(l => l.type !== 'header');
-      const doneIds = new Set(progData.filter(p => p.completed).map(p => p.lesson_id));
+      if (progErr && progErr.code !== '42P01') console.warn('Progress load error:', progErr);
+      if (progData) setProgress(progData);
 
-      if (reqId) {
-        const found = allLes.find(l => l.id === reqId);
-        setActiveLesson(found || nonH[0] || null);
-      } else {
-        setActiveLesson(nonH.find(l => !doneIds.has(l.id)) || nonH[0] || null);
-      }
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+    } catch (e: any) {
+      console.error('Load error:', e);
+      toast({ title: 'Error loading course', description: e.message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const allLessons = Object.values(lessons).flat();
-  const nonHeaders = allLessons.filter(l => l.type !== 'header');
-  const completedIds = new Set(progress.filter(p => p.completed).map(p => p.lesson_id));
-  const totalLessons = nonHeaders.length;
-  const doneLessons = nonHeaders.filter(l => completedIds.has(l.id)).length;
-  const overallPct = totalLessons > 0 ? Math.round((doneLessons / totalLessons) * 100) : 0;
-  const activeIdx = activeLesson ? nonHeaders.findIndex(l => l.id === activeLesson.id) : -1;
-  const prevLesson = activeIdx > 0 ? nonHeaders[activeIdx - 1] : null;
-  const nextLesson = activeIdx < nonHeaders.length - 1 ? nonHeaders[activeIdx + 1] : null;
-  const activeProgress = activeLesson ? progress.find(p => p.lesson_id === activeLesson.id) ?? null : null;
-  const isDone = activeLesson ? completedIds.has(activeLesson.id) : false;
+  // ── Mark lesson complete ─────────────────────────────────────────────────
+  const markComplete = async (lessonId: string) => {
+    if (!user || !courseId) return;
 
-  const isLessonLocked = useCallback((lesson: Lesson): boolean => {
-    const mod = modules.find(m => m.id === lesson.module_id);
-    if (mod?.unlock_date && new Date(mod.unlock_date) > new Date()) return true;
-    if (lesson.type === 'header') return false;
-    const idx = nonHeaders.findIndex(l => l.id === lesson.id);
-    if (idx <= 0) return false;
-    return !completedIds.has(nonHeaders[idx - 1].id);
-  }, [modules, nonHeaders, completedIds]);
+    try {
+      const existing = progress.find(p => p.lesson_id === lessonId && p.user_id === user.id);
 
-  const selectLesson = (lesson: Lesson) => {
-    if (lesson.type === 'header') return;
+      if (existing) {
+        // Update existing
+        const { error } = await supabase
+          .from('lesson_progress')
+          .update({ completed: true, completed_at: new Date().toISOString() })
+          .eq('id', existing.id);
+        if (error) throw error;
+        setProgress(prev =>
+          prev.map(p =>
+            p.id === existing.id
+              ? { ...p, completed: true, completed_at: new Date().toISOString() }
+              : p
+          )
+        );
+      } else {
+        // Insert new
+        const { data, error } = await supabase
+          .from('lesson_progress')
+          .insert({
+            user_id: user.id,
+            course_id: courseId,
+            lesson_id: lessonId,
+            completed: true,
+            completed_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        if (data) setProgress(prev => [...prev, data]);
+      }
+
+      toast({ title: 'Lesson completed! ✓' });
+    } catch (e: any) {
+      console.error('Mark complete error:', e);
+      toast({ title: 'Error saving progress', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  // ── Navigate to lesson ───────────────────────────────────────────────────
+  const selectLesson = useCallback((lesson: Lesson) => {
     if (isLessonLocked(lesson)) {
-      const idx = nonHeaders.findIndex(l => l.id === lesson.id);
-      const prev = idx > 0 ? nonHeaders[idx - 1] : null;
-      toast({ title: '🔒 Complete previous lesson first', description: prev ? 'Finish "' + prev.title + '" first.' : undefined, variant: 'destructive' });
+      toast({
+        title: 'Lesson locked',
+        description: 'Complete the previous lesson first to unlock this one.',
+        variant: 'destructive',
+      });
       return;
     }
-    startedAt.current = new Date();
-    setActiveLesson(lesson);
-    setSearchParams({ lesson: lesson.id });
-    contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    setActiveLessonId(lesson.id);
+    // Reset quiz/survey/assignment state
+    setQuizAnswers({});
+    setQuizSubmitted(false);
+    setQuizScore(null);
+    setSurveyResponses([]);
+    setSurveySubmitted(false);
+    setAssignText('');
+    setAssignUrl('');
+    setAssignFile(null);
+    setAssignSubmitted(false);
+    setAssignExistingSubmission(null);
+  }, [isLessonLocked, toast]);
 
-  const markComplete = async (score?: number): Promise<void> => {
-    if (!activeLesson || !userId) return;
-    setMarking(true);
-    const timeSpent = Math.round((new Date().getTime() - startedAt.current.getTime()) / 1000);
+  // ── Quiz submission ──────────────────────────────────────────────────────
+  const submitQuiz = useCallback(() => {
+    if (!activeLesson?.quiz_data) return;
+
+    const questions = activeLesson.quiz_data.filter(q => q.type === 'multiple_choice');
+    const totalQ = questions.length;
+    let correctCount = 0;
+
+    questions.forEach((q, i) => {
+      if (quizAnswers[i] === q.correct) correctCount++;
+    });
+
+    const score = Math.round((correctCount / totalQ) * 100);
+    const passing = score >= 50;
+
+    setQuizScore(score);
+    setQuizPassing(passing);
+    setQuizSubmitted(true);
+
+    // Save quiz result
+    if (user && courseId) {
+      supabase
+        .from('quiz_results')
+        .insert({
+          user_id: user.id,
+          lesson_id: activeLesson.id,
+          course_id: courseId,
+          score: correctCount,
+          total_questions: totalQ,
+          passed: passing,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Quiz result save error:', error);
+          // Mark complete regardless of pass/fail
+          markComplete(activeLesson.id);
+        });
+    }
+  }, [activeLesson, quizAnswers, user, courseId, markComplete]);
+
+  // ── Survey submission ────────────────────────────────────────────────────
+  const submitSurvey = useCallback(() => {
+    if (!activeLesson?.quiz_data || surveyResponses.length === 0) return;
+
+    setSurveySubmitted(true);
+
+    // Save survey (reuse lesson_progress or a survey table)
+    if (user && courseId) {
+      supabase
+        .from('survey_responses')
+        .insert({
+          user_id: user.id,
+          lesson_id: activeLesson.id,
+          course_id: courseId,
+          responses: surveyResponses,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Survey save error:', error);
+          markComplete(activeLesson.id);
+        });
+    }
+  }, [activeLesson, surveyResponses, user, courseId, markComplete]);
+
+  // ── Assignment submission ────────────────────────────────────────────────
+  const submitAssignment = useCallback(async () => {
+    if (!activeLesson || !user || !courseId) return;
+    if (!assignText && !assignUrl && !assignFile) {
+      toast({ title: 'Please provide your submission', variant: 'destructive' });
+      return;
+    }
+
+    setAssignUploading(true);
+
     try {
-      const payload: Record<string, any> = { user_id: userId, lesson_id: activeLesson.id, completed: true, time_spent: timeSpent, updated_at: new Date().toISOString() };
-      if (score !== undefined) payload.score = score;
-      let { error } = await supabase.from('lesson_progress').upsert({ ...payload, completed_at: new Date().toISOString() }, { onConflict: 'user_id,lesson_id' });
-      if (error?.message?.includes('completed_at')) { ({ error } = await supabase.from('lesson_progress').upsert(payload, { onConflict: 'user_id,lesson_id' })); }
+      let fileUrl: string | null = null;
+
+      // Upload file if provided
+      if (assignFile) {
+        const path = `assignments/${user.id}/${Date.now()}_${assignFile.name}`;
+        const { error: uploadErr } = await supabase.storage
+          .from('course-files')
+          .upload(path, assignFile);
+        if (uploadErr) throw uploadErr;
+
+        const { data } = supabase.storage.from('course-files').getPublicUrl(path);
+        fileUrl = data.publicUrl;
+      }
+
+      const submissionType = assignFile ? 'file' : assignUrl ? 'url' : 'text';
+
+      const { error } = await supabase
+        .from('assignment_submissions')
+        .insert({
+          user_id: user.id,
+          lesson_id: activeLesson.id,
+          course_id: courseId,
+          content: assignText || null,
+          file_url: fileUrl || (assignUrl || null),
+          submission_type: submissionType,
+          status: 'submitted',
+          submitted_at: new Date().toISOString(),
+        });
+
       if (error) throw error;
-      setProgress(prev => [...prev.filter(p => p.lesson_id !== activeLesson.id), { lesson_id: activeLesson.id, completed: true, score, completed_at: new Date().toISOString(), time_spent: timeSpent }]);
-      toast({ title: '✓ Lesson completed!' });
-    } catch (e: any) { toast({ title: 'Error', description: e.message, variant: 'destructive' }); } finally { setMarking(false); }
-  };
 
-  const markSurveyComplete = async (answers: Record<number, any>, rating: number | null): Promise<void> => {
-    if (!activeLesson || !userId) return;
-    setMarking(true);
-    try {
-      const answersArray = (activeLesson.quiz_data || []).map((q, i) => ({ question: q.q, type: q.type, answer: answers[i] ?? null, label: q.type === 'rating' && answers[i] ? ['', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'][answers[i] as number] || '' : '', optionText: q.type === 'multiple_choice' && answers[i] !== undefined ? (q.a?.[answers[i] as number] || '') : '' }));
-      const { error: surveyErr } = await supabase.from('survey_responses').upsert({ user_id: userId, lesson_id: activeLesson.id, answers: answersArray, rating }, { onConflict: 'user_id,lesson_id' });
-      if (surveyErr) { console.error('Survey save error details:', surveyErr); throw new Error('Failed to save survey: ' + surveyErr.message); }
-      const timeSpent = Math.round((new Date().getTime() - startedAt.current.getTime()) / 1000);
-      const { error: progressErr } = await supabase.from('lesson_progress').upsert({ user_id: userId, lesson_id: activeLesson.id, completed: true, time_spent: timeSpent, updated_at: new Date().toISOString(), completed_at: new Date().toISOString() }, { onConflict: 'user_id,lesson_id' });
-      if (progressErr?.message?.includes('completed_at')) {
-        const { error: fallbackErr } = await supabase.from('lesson_progress').upsert({ user_id: userId, lesson_id: activeLesson.id, completed: true, time_spent: timeSpent, updated_at: new Date().toISOString() }, { onConflict: 'user_id,lesson_id' });
-        if (fallbackErr) throw fallbackErr;
-      } else if (progressErr) { throw progressErr; }
-      setProgress(prev => [...prev.filter(p => p.lesson_id !== activeLesson.id), { lesson_id: activeLesson.id, completed: true, completed_at: new Date().toISOString(), time_spent: timeSpent }]);
-      setSubmittedSurveys(prev => new Set([...prev, activeLesson.id]));
-      toast({ title: '✓ Survey submitted successfully!', description: 'Your feedback has been saved.' });
-    } catch (e: any) { console.error('markSurveyComplete error:', e); toast({ title: 'Failed to submit survey', description: e.message || 'Please try again or contact support.', variant: 'destructive' }); } finally { setMarking(false); }
-  };
-
-  const markAssignmentComplete = async (): Promise<void> => {
-    if (!activeLesson || !userId) return;
-    const timeSpent = Math.round((new Date().getTime() - startedAt.current.getTime()) / 1000);
-    const payload: Record<string, any> = { user_id: userId, lesson_id: activeLesson.id, completed: true, time_spent: timeSpent, updated_at: new Date().toISOString() };
-    let { error } = await supabase.from('lesson_progress').upsert({ ...payload, completed_at: new Date().toISOString() }, { onConflict: 'user_id,lesson_id' });
-    if (error?.message?.includes('completed_at')) { ({ error } = await supabase.from('lesson_progress').upsert(payload, { onConflict: 'user_id,lesson_id' })); }
-    setProgress(prev => [...prev.filter(p => p.lesson_id !== activeLesson.id), { lesson_id: activeLesson.id, completed: true, time_spent: timeSpent }]);
-    const { data: ar } = await supabase.from('assignment_submissions').select('*').eq('user_id', userId).eq('lesson_id', activeLesson.id).single();
-    if (ar) setAssignmentSubs(prev => ({ ...prev, [activeLesson.id]: ar }));
-  };
-
-  const renderContent = () => {
-    if (!activeLesson) {
-      return (
-        <div className="flex flex-col items-center justify-center h-full gap-6 text-gray-300">
-          <BookOpen className="w-16 h-16" />
-          <div className="text-center"><p className="text-gray-500 font-medium">Select a lesson from the sidebar</p></div>
-        </div>
-      );
+      setAssignSubmitted(true);
+      toast({ title: 'Assignment submitted successfully! ✓' });
+      markComplete(activeLesson.id);
+    } catch (e: any) {
+      console.error('Assignment submit error:', e);
+      toast({ title: 'Error submitting assignment', description: e.message, variant: 'destructive' });
+    } finally {
+      setAssignUploading(false);
     }
-    if (isLessonLocked(activeLesson)) {
-      return (
-        <div className="flex flex-col items-center justify-center h-full gap-6">
-          <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center"><Lock className="w-8 h-8 text-gray-400" /></div>
-          <div className="text-center">
-            <h3 className="text-lg font-bold text-gray-700">Lesson Locked</h3>
-            <p className="text-gray-500 text-sm mt-1 max-w-xs">Complete the previous lesson to unlock this one.</p>
-            {prevLesson && <Button className="mt-4 bg-indigo-600 hover:bg-indigo-700" onClick={() => selectLesson(prevLesson)}>Go to Previous Lesson</Button>}
-          </div>
-        </div>
-      );
+  }, [activeLesson, user, courseId, assignText, assignUrl, assignFile, toast, markComplete]);
+
+  // Check for existing assignment submission
+  useEffect(() => {
+    if (activeLesson?.type === 'assignment' && user && courseId && !assignExistingSubmission) {
+      supabase
+        .from('assignment_submissions')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('lesson_id', activeLesson.id)
+        .order('submitted_at', { ascending: false })
+        .limit(1)
+        .then(({ data }) => {
+          if (data && data.length > 0) {
+            setAssignExistingSubmission(data[0]);
+            setAssignSubmitted(true);
+          }
+        });
     }
+  }, [activeLesson?.id, activeLesson?.type, user, courseId]);
 
-    const lessonType = activeLesson.type;
-    const isInteractive = lessonType === 'quiz' || lessonType === 'survey' || lessonType === 'assignment' || lessonType === 'header';
+  // ── Navigate next/prev lesson ────────────────────────────────────────────
+  const goToNextLesson = useCallback(() => {
+    if (!activeLesson) return;
+    const flatLessons = allLessons.filter(l => l.type !== 'header').sort((a, b) => {
+      const modA = modules.find(m => m.id === a.module_id);
+      const modB = modules.find(m => m.id === b.module_id);
+      if (!modA || !modB) return 0;
+      if (modA.order_index !== modB.order_index) return modA.order_index - modB.order_index;
+      return a.order_index - b.order_index;
+    });
+    const idx = flatLessons.findIndex(l => l.id === activeLesson.id);
+    if (idx >= 0 && idx < flatLessons.length - 1) {
+      selectLesson(flatLessons[idx + 1]);
+    }
+  }, [activeLesson, allLessons, modules, selectLesson]);
 
-    return (
-      <div className="max-w-3xl mx-auto pb-16">
-        <div className="mb-8">
-          <div className="flex items-start gap-3 mb-3 flex-1">
-            {isDone && <CheckCircle2 className="w-6 h-6 text-emerald-500 flex-shrink-0 mt-0.5" />}
-            <h1 className="text-2xl font-bold text-gray-900 leading-tight">{activeLesson.title}</h1>
-          </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full font-medium capitalize">{lessonType === 'url' ? 'External Link' : lessonType}</span>
-            {activeIdx >= 0 && <span className="text-xs text-gray-400">Lesson {activeIdx + 1} of {totalLessons}</span>}
-            {isDone && <span className="text-xs px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full font-medium flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Completed</span>}
-            {activeProgress?.score !== undefined && activeProgress.score !== null && (
-              <span className={activeProgress.score >= 70 ? 'text-xs px-3 py-1 rounded-full font-medium bg-emerald-50 text-emerald-600' : 'text-xs px-3 py-1 rounded-full font-medium bg-red-50 text-red-600'}>Score: {activeProgress.score}%</span>
-            )}
-          </div>
-        </div>
+  const goToPrevLesson = useCallback(() => {
+    if (!activeLesson) return;
+    const flatLessons = allLessons.filter(l => l.type !== 'header').sort((a, b) => {
+      const modA = modules.find(m => m.id === a.module_id);
+      const modB = modules.find(m => m.id === b.module_id);
+      if (!modA || !modB) return 0;
+      if (modA.order_index !== modB.order_index) return modA.order_index - modB.order_index;
+      return a.order_index - b.order_index;
+    });
+    const idx = flatLessons.findIndex(l => l.id === activeLesson.id);
+    if (idx > 0) {
+      selectLesson(flatLessons[idx - 1]);
+    }
+  }, [activeLesson, allLessons, modules, selectLesson]);
 
-        {lessonType === 'text' && (
-          <div className="bg-white border rounded-2xl p-8 shadow-sm">
-            {activeLesson.content ? <div className="prose prose-gray max-w-none text-gray-700 leading-relaxed text-[15px] whitespace-pre-wrap">{activeLesson.content}</div> : <p className="text-gray-400 italic text-center py-8">No content yet.</p>}
-          </div>
-        )}
-
-        {lessonType === 'video' && (
-          <div className="rounded-2xl overflow-hidden bg-black shadow-xl">
-            {activeLesson.content && getYouTubeId(activeLesson.content) ? (
-              <div className="aspect-video"><iframe key={activeLesson.id} src={'https://www.youtube.com/embed/' + getYouTubeId(activeLesson.content) + '?rel=0'} className="w-full h-full" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen /></div>
-            ) : activeLesson.content ? (
-              <div className="aspect-video"><video key={activeLesson.id} src={activeLesson.content} controls className="w-full h-full" onEnded={() => !isDone && markComplete()} /></div>
-            ) : (
-              <div className="aspect-video flex items-center justify-center text-gray-500"><div className="text-center"><PlayCircle className="w-12 h-12 mx-auto mb-2 text-gray-600" /><p className="text-sm">No video URL.</p></div></div>
-            )}
-          </div>
-        )}
-
-        {lessonType === 'url' && (activeLesson.content ? (
-          <a href={activeLesson.content} target="_blank" rel="noopener noreferrer" className="block">
-            <div className="border-2 border-dashed border-indigo-200 rounded-2xl p-10 text-center hover:bg-indigo-50 hover:border-indigo-400 transition-all cursor-pointer group">
-              <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:bg-indigo-200"><ExternalLink className="w-7 h-7 text-indigo-600" /></div>
-              <p className="font-bold text-indigo-700 text-lg">Open External Resource</p>
-              <p className="text-xs text-gray-400 mt-2 truncate max-w-sm mx-auto">{activeLesson.content}</p>
-            </div>
-          </a>
-        ) : (
-          <div className="border-2 border-dashed border-gray-200 rounded-2xl p-10 text-center"><p className="text-gray-400">No URL provided.</p></div>
-        ))}
-
-        {lessonType === 'header' && (
-          <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border-l-4 border-indigo-500 rounded-r-2xl p-6">
-            <h2 className="text-xl font-bold text-indigo-800">{activeLesson.title}</h2>
-            {activeLesson.content && <p className="text-indigo-600 text-sm mt-2 leading-relaxed">{activeLesson.content}</p>}
-          </div>
-        )}
-
-        {lessonType === 'quiz' && (
-          <QuizRenderer key={activeLesson.id} questions={activeLesson.quiz_data || []} existingScore={activeProgress?.score} onComplete={async (score) => { await markComplete(score); }} />
-        )}
-
-        {lessonType === 'survey' && (
-          <SurveyRenderer key={activeLesson.id} questions={activeLesson.quiz_data || []} alreadySubmitted={submittedSurveys.has(activeLesson.id)} onComplete={markSurveyComplete} />
-        )}
-
-        {lessonType === 'assignment' && (
-          <AssignmentRenderer key={activeLesson.id} lesson={activeLesson} userId={userId} existingSub={assignmentSubs[activeLesson.id] ?? null} onComplete={markAssignmentComplete} />
-        )}
-
-        {activeLesson.file_url && lessonType !== 'assignment' && (
-          <div className="mt-6">
-            <FileAttachmentCard url={activeLesson.file_url!} label="Lesson Resource" sublabel="Attached file for this lesson" canDownload={activeLesson.file_downloadable !== false} />
-          </div>
-        )}
-
-        {!isInteractive && (
-          <div className="mt-10 pt-6 border-t border-gray-100">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              {isDone ? (
-                <div className="flex items-center gap-2.5 text-emerald-600">
-                  <div className="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center"><CheckCircle2 className="w-4 h-4" /></div>
-                  <div>
-                    <p className="text-sm font-semibold">Completed!</p>
-                    {activeProgress?.time_spent && <p className="text-xs text-gray-400">Time: {formatTime(activeProgress.time_spent)}</p>}
-                  </div>
-                </div>
-              ) : (
-                <Button onClick={() => markComplete()} disabled={marking} className="bg-emerald-600 hover:bg-emerald-700 h-11 px-6 font-semibold">
-                  {marking ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Saving...</> : <><CheckCircle2 className="w-4 h-4 mr-2" />Mark as Complete</>}
-                </Button>
-              )}
-              {nextLesson && !isLessonLocked(nextLesson) && (
-                <Button variant={isDone ? 'default' : 'outline'} className={isDone ? 'bg-indigo-600 hover:bg-indigo-700 h-11 px-6' : 'h-11 px-6'} onClick={() => selectLesson(nextLesson)}>
-                  {'Next: ' + (nextLesson.title.length > 28 ? nextLesson.title.slice(0, 28) + '…' : nextLesson.title)}<ArrowRight className="w-4 h-4 ml-2" />
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {isInteractive && lessonType !== 'header' && isDone && nextLesson && (
-          <div className="mt-6 pt-6 border-t border-gray-100 flex justify-end">
-            <Button className="bg-indigo-600 hover:bg-indigo-700 h-11 px-6" onClick={() => selectLesson(nextLesson)} disabled={isLessonLocked(nextLesson)}>Continue<ArrowRight className="w-4 h-4 ml-2" /></Button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
+  // ── Render: Loading ──────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50">
-        <div className="flex flex-col items-center gap-3"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /><p className="text-sm text-gray-500">Loading course...</p></div>
+      <div className="flex items-center justify-center min-h-[60vh] gap-3">
+        <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+        <span className="text-gray-500">Loading course...</span>
       </div>
     );
   }
 
-  const sidebarWidth = sidebarOpen ? 'w-80' : 'w-0';
+  if (!course) {
+    return (
+      <div className="text-center py-20">
+        <AlertCircle className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+        <h2 className="text-xl font-semibold text-gray-600">Course not found</h2>
+        <Button variant="outline" className="mt-4" onClick={() => navigate('/student/courses')}>
+          Back to Courses
+        </Button>
+      </div>
+    );
+  }
 
-  return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
-      <aside className={sidebarWidth + ' flex-shrink-0 transition-all duration-300 overflow-hidden'}>
-        <div className="w-80 h-full bg-white border-r flex flex-col shadow-sm">
-          <div className="p-4 border-b bg-gray-50/80">
-            <button onClick={() => navigate('/student/courses')} className="flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 mb-3"><ChevronLeft className="w-3 h-3" />Back</button>
-            <h2 className="font-bold text-gray-900 text-sm line-clamp-2 mb-3">{courseTitle}</h2>
-            <div className="flex justify-between text-xs text-gray-500 mb-1.5"><span>{doneLessons}/{totalLessons} lessons</span><span className="font-semibold text-indigo-600">{overallPct}%</span></div>
-            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all duration-700" style={{ width: overallPct + '%', background: overallPct === 100 ? 'linear-gradient(90deg,#10b981,#059669)' : 'linear-gradient(90deg,#6366f1,#4f46e5)' }} />
-            </div>
-            {overallPct === 100 && (<div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600 font-medium"><Trophy className="w-3.5 h-3.5" />Course completed!</div>)}
+  // ── Render: Content Area for active lesson ───────────────────────────────
+  const renderLessonContent = () => {
+    if (!activeLesson) {
+      return (
+        <div className="text-center py-20">
+          <BookOpen className="w-16 h-16 mx-auto mb-4 text-gray-200" />
+          <h3 className="text-lg font-semibold text-gray-500">Select a lesson to begin</h3>
+          <p className="text-sm text-gray-400 mt-1">Choose from the sidebar to get started</p>
+        </div>
+      );
+    }
+
+    switch (activeLesson.type) {
+      case 'header':
+        return renderHeaderContent();
+      case 'text':
+        return renderTextContent();
+      case 'video':
+        return renderVideoContent();
+      case 'quiz':
+        return renderQuizContent();
+      case 'survey':
+        return renderSurveyContent();
+      case 'assignment':
+        return renderAssignmentContent();
+      case 'url':
+        return renderUrlContent();
+      default:
+        return renderTextContent();
+    }
+  };
+
+  // ── Text Content ─────────────────────────────────────────────────────────
+  const renderTextContent = () => {
+    const isComplete = completedIds.has(activeLesson!.id);
+    const canDownload = activeLesson?.file_downloadable !== false;
+    const hasFile = !!activeLesson?.file_url;
+
+    return (
+      <div className="space-y-6">
+        <div
+          className="prose prose-sm max-w-none text-gray-700 leading-relaxed"
+          dangerouslySetInnerHTML={{ __html: activeLesson?.content || '' }}
+        />
+        {/* ✅ FIXED: File is ALWAYS shown inline (view or view+download) */}
+        {hasFile && (
+          <div className="mt-6">
+            <EmbeddedFileViewer url={activeLesson!.file_url!} canDownload={canDownload} />
           </div>
-          <div className="flex-1 overflow-y-auto">
-            {modules.map((mod, mIdx) => {
-              const modLessons = lessons[mod.id] || [];
-              const modNonH = modLessons.filter(l => l.type !== 'header');
-              const modDone = modNonH.filter(l => completedIds.has(l.id)).length;
-              const modLocked = mod.unlock_date && new Date(mod.unlock_date) > new Date();
-              const isExp = expanded[mod.id];
-              const modComplete = modDone === modNonH.length && modNonH.length > 0;
-              return (
-                <div key={mod.id} className="border-b border-gray-100">
-                  <button disabled={!!modLocked} onClick={() => setExpanded(prev => ({ ...prev, [mod.id]: !prev[mod.id] }))} className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-left transition-colors">
-                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                      <span className={modComplete ? 'w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center flex-shrink-0 bg-emerald-100 text-emerald-700' : modLocked ? 'w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center flex-shrink-0 bg-gray-100 text-gray-400' : 'w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center flex-shrink-0 bg-indigo-100 text-indigo-700'}>
-                        {modComplete ? '✓' : modLocked ? '🔒' : mIdx + 1}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-semibold text-gray-800 truncate">{mod.title}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">{modLocked ? 'Unlocks ' + new Date(mod.unlock_date!).toLocaleDateString() : modDone + '/' + modNonH.length + ' done'}</p>
-                      </div>
+        )}
+        {/* Mark complete button */}
+        {!isComplete && (
+          <div className="pt-4 border-t">
+            <Button onClick={() => markComplete(activeLesson!.id)} className="gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Mark as Complete
+            </Button>
+          </div>
+        )}
+        {isComplete && (
+          <div className="pt-4 border-t flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Lesson completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Header Content (section divider) ─────────────────────────────────────
+  const renderHeaderContent = () => (
+    <div className="text-center py-16">
+      <LayoutDashboard className="w-12 h-12 mx-auto mb-4 text-indigo-300" />
+      <h2 className="text-2xl font-bold text-gray-700">{activeLesson?.title}</h2>
+      {activeLesson?.content && (
+        <p className="text-gray-500 mt-2 max-w-md mx-auto">{activeLesson.content}</p>
+      )}
+    </div>
+  );
+
+  // ── Video Content ────────────────────────────────────────────────────────
+  const renderVideoContent = () => {
+    const isComplete = completedIds.has(activeLesson!.id);
+    const videoUrl = activeLesson?.file_url || activeLesson?.content || '';
+    const canDownload = activeLesson?.file_downloadable !== false;
+
+    // Check if YouTube URL
+    const youtubeMatch = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+    const vimeoMatch = videoUrl.match(/vimeo\.com\/(\d+)/);
+
+    return (
+      <div className="space-y-6">
+        {youtubeMatch ? (
+          <div className="aspect-video rounded-xl overflow-hidden bg-black">
+            <iframe
+              src={`https://www.youtube.com/embed/${youtubeMatch[1]}`}
+              className="w-full h-full"
+              allowFullScreen
+              title={activeLesson?.title}
+            />
+          </div>
+        ) : vimeoMatch ? (
+          <div className="aspect-video rounded-xl overflow-hidden bg-black">
+            <iframe
+              src={`https://player.vimeo.com/video/${vimeoMatch[1]}`}
+              className="w-full h-full"
+              allowFullScreen
+              title={activeLesson?.title}
+            />
+          </div>
+        ) : videoUrl ? (
+          <div className="space-y-2">
+            {!canDownload && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+                <ShieldCheck className="w-4 h-4 text-amber-600" />
+                <span className="text-xs text-amber-700 font-medium">View only — downloading is disabled by instructor</span>
+              </div>
+            )}
+            <div className="aspect-video rounded-xl overflow-hidden bg-gray-900">
+              <video
+                src={videoUrl}
+                controls
+                className="w-full h-full"
+                controlsList={canDownload ? undefined : 'nodownload noremoteplayback'}
+                disablePictureInPicture={!canDownload}
+                disableRemotePlayback={!canDownload}
+                onContextMenu={canDownload ? undefined : (e: React.MouseEvent) => e.preventDefault()}
+                onEnded={() => markComplete(activeLesson!.id)}
+              />
+            </div>
+            {canDownload && (
+              <a
+                href={videoUrl}
+                download
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700 hover:bg-indigo-100 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download Video
+              </a>
+            )}
+          </div>
+        ) : (
+          <div className="aspect-video rounded-xl bg-gray-100 flex items-center justify-center">
+            <div className="text-center">
+              <PlayCircle className="w-12 h-12 mx-auto text-gray-300 mb-2" />
+              <p className="text-sm text-gray-400">No video available</p>
+            </div>
+          </div>
+        )}
+
+        {/* Video description */}
+        {activeLesson?.content && !activeLesson?.file_url && (
+          <div
+            className="prose prose-sm max-w-none text-gray-600"
+            dangerouslySetInnerHTML={{ __html: activeLesson.content }}
+          />
+        )}
+
+        {!isComplete && (
+          <div className="pt-4 border-t">
+            <Button onClick={() => markComplete(activeLesson!.id)} className="gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Mark as Complete
+            </Button>
+          </div>
+        )}
+        {isComplete && (
+          <div className="pt-4 border-t flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Lesson completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Quiz Content ─────────────────────────────────────────────────────────
+  const renderQuizContent = () => {
+    const questions = activeLesson?.quiz_data?.filter(q => q.type === 'multiple_choice') || [];
+    const isComplete = completedIds.has(activeLesson!.id);
+
+    if (questions.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <HelpCircle className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+          <h3 className="text-lg font-semibold text-gray-500">No quiz questions</h3>
+          <p className="text-sm text-gray-400">This quiz hasn't been set up yet.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+          <div className="flex items-center gap-2 text-amber-800">
+            <HelpCircle className="w-5 h-5" />
+            <span className="font-semibold">Quiz: {questions.length} question{questions.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="text-sm text-amber-700 mt-1">Select the correct answer for each question. You need 50% to pass.</p>
+        </div>
+
+        {quizSubmitted && quizScore !== null ? (
+          <div className={`p-6 rounded-xl text-center ${quizPassing ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+            <Trophy className={`w-12 h-12 mx-auto mb-3 ${quizPassing ? 'text-emerald-500' : 'text-red-400'}`} />
+            <h3 className={`text-xl font-bold ${quizPassing ? 'text-emerald-800' : 'text-red-800'}`}>
+              {quizPassing ? 'Congratulations! You Passed!' : 'Keep Trying!'}
+            </h3>
+            <p className={`text-3xl font-bold mt-2 ${quizPassing ? 'text-emerald-600' : 'text-red-500'}`}>
+              {quizScore}%
+            </p>
+            <p className="text-sm text-gray-500 mt-1">
+              You got {questions.filter((q, i) => quizAnswers[i] === q.correct).length} out of {questions.length} correct
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {questions.map((q, qIdx) => (
+              <div key={qIdx} className="p-4 border rounded-xl">
+                <p className="font-semibold text-sm text-gray-800 mb-3">
+                  <span className="text-indigo-500 mr-2">Q{qIdx + 1}.</span>
+                  {q.q}
+                </p>
+                <div className="space-y-2">
+                  {q.a.map((option, oIdx) => {
+                    const isSelected = quizAnswers[qIdx] === oIdx;
+                    let borderClass = 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50';
+                    if (isSelected) borderClass = 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-200';
+                    // After submission: show correct/wrong
+                    if (quizSubmitted) {
+                      if (oIdx === q.correct) borderClass = 'border-emerald-500 bg-emerald-50';
+                      else if (isSelected && oIdx !== q.correct) borderClass = 'border-red-500 bg-red-50';
+                    }
+                    return (
+                      <button
+                        key={oIdx}
+                        className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition-all ${borderClass} ${quizSubmitted ? 'cursor-default' : 'cursor-pointer'}`}
+                        onClick={() => !quizSubmitted && setQuizAnswers(prev => ({ ...prev, [qIdx]: oIdx }))}
+                        disabled={quizSubmitted}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs ${isSelected ? 'border-indigo-500 bg-indigo-500 text-white' : 'border-gray-300'}`}>
+                            {isSelected && '✓'}
+                          </span>
+                          {option}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!quizSubmitted && (
+          <div className="pt-4 border-t">
+            <Button
+              onClick={submitQuiz}
+              disabled={Object.keys(quizAnswers).length < questions.length}
+              className="gap-2"
+            >
+              <Send className="w-4 h-4" />
+              Submit Quiz
+            </Button>
+            {Object.keys(quizAnswers).length < questions.length && (
+              <p className="text-xs text-gray-400 mt-2">
+                Answer all questions before submitting ({Object.keys(quizAnswers).length}/{questions.length})
+              </p>
+            )}
+          </div>
+        )}
+
+        {isComplete && (
+          <div className="pt-2 flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Quiz completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Survey Content ───────────────────────────────────────────────────────
+  const renderSurveyContent = () => {
+    const questions = activeLesson?.quiz_data || [];
+    const isComplete = completedIds.has(activeLesson!.id);
+
+    if (questions.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <ClipboardList className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+          <h3 className="text-lg font-semibold text-gray-500">No survey questions</h3>
+        </div>
+      );
+    }
+
+    const updateResponse = (qIdx: number, value: string, type: string, rating?: number) => {
+      setSurveyResponses(prev => {
+        const updated = [...prev];
+        updated[qIdx] = {
+          question: questions[qIdx]?.q || '',
+          answer: value,
+          type,
+          rating,
+        };
+        return updated;
+      });
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="p-4 bg-purple-50 border border-purple-200 rounded-xl">
+          <div className="flex items-center gap-2 text-purple-800">
+            <ClipboardList className="w-5 h-5" />
+            <span className="font-semibold">Survey: {questions.length} question{questions.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="text-sm text-purple-700 mt-1">Your feedback is anonymous and helps us improve.</p>
+        </div>
+
+        {surveySubmitted ? (
+          <div className="p-6 rounded-xl text-center bg-purple-50 border border-purple-200">
+            <CheckCircle2 className="w-12 h-12 mx-auto mb-3 text-purple-500" />
+            <h3 className="text-xl font-bold text-purple-800">Thank you for your feedback!</h3>
+            <p className="text-sm text-purple-600 mt-1">Your response has been recorded.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {questions.map((q, qIdx) => (
+              <div key={qIdx} className="p-4 border rounded-xl">
+                <p className="font-semibold text-sm text-gray-800 mb-3">
+                  <span className="text-purple-500 mr-2">Q{qIdx + 1}.</span>
+                  {q.q}
+                </p>
+                {q.type === 'rating' && (
+                  <div className="flex gap-1">
+                    {[1, 2, 3, 4, 5].map(star => (
+                      <button
+                        key={star}
+                        onClick={() => updateResponse(qIdx, `${star} star${star > 1 ? 's' : ''}`, 'rating', star)}
+                        className="hover:scale-110 transition-transform"
+                      >
+                        <Star
+                          className={`w-8 h-8 ${
+                            (surveyResponses[qIdx]?.rating || 0) >= star
+                              ? 'text-amber-400 fill-amber-400'
+                              : 'text-gray-300'
+                          }`}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {q.type === 'multiple_choice' && (
+                  <div className="space-y-2">
+                    {q.a.map((option, oIdx) => (
+                      <button
+                        key={oIdx}
+                        className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition-all ${
+                          surveyResponses[qIdx]?.answer === option
+                            ? 'border-purple-500 bg-purple-50'
+                            : 'border-gray-200 hover:border-purple-300 hover:bg-purple-50'
+                        }`}
+                        onClick={() => updateResponse(qIdx, option, 'multiple_choice')}
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {q.type === 'text' && (
+                  <Textarea
+                    placeholder="Type your answer here..."
+                    rows={3}
+                    className="resize-none"
+                    value={surveyResponses[qIdx]?.answer || ''}
+                    onChange={e => updateResponse(qIdx, e.target.value, 'text')}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!surveySubmitted && (
+          <div className="pt-4 border-t">
+            <Button onClick={submitSurvey} className="gap-2">
+              <Send className="w-4 h-4" />
+              Submit Survey
+            </Button>
+          </div>
+        )}
+
+        {isComplete && (
+          <div className="pt-2 flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Survey completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Assignment Content ───────────────────────────────────────────────────
+  const renderAssignmentContent = () => {
+    const config = activeLesson?.assignment_config;
+    const isComplete = completedIds.has(activeLesson!.id);
+
+    return (
+      <div className="space-y-6">
+        {/* Assignment instructions */}
+        {config?.instructions && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-blue-800">
+              <MessageSquare className="w-5 h-5" />
+              <span className="font-semibold">Assignment Instructions</span>
+            </div>
+            {config.instruction_type === 'url' && config.resource_url ? (
+              <a
+                href={config.resource_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700 hover:bg-blue-100 transition-colors"
+              >
+                <ExternalLink className="w-4 h-4" />
+                View Assignment Brief (External Link)
+              </a>
+            ) : (
+              <div
+                className="p-4 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-800 whitespace-pre-wrap leading-relaxed"
+              >
+                {config.instructions}
+              </div>
+            )}
+            {config.due_note && (
+              <div className="flex items-center gap-2 text-xs text-amber-600">
+                <Clock className="w-3.5 h-3.5" />
+                {config.due_note}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Lesson content (additional context) */}
+        {activeLesson?.content && activeLesson.type === 'assignment' && (
+          <div
+            className="prose prose-sm max-w-none text-gray-600"
+            dangerouslySetInnerHTML={{ __html: activeLesson.content }}
+          />
+        )}
+
+        {/* Existing submission info */}
+        {assignExistingSubmission && (
+          <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+            <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
+              <CheckCircle2 className="w-4 h-4" />
+              You have already submitted this assignment
+            </div>
+            <p className="text-xs text-emerald-600">
+              Submitted on {new Date(assignExistingSubmission.submitted_at).toLocaleString()}
+              {assignExistingSubmission.status === 'graded' && (
+                <> — Grade: {assignExistingSubmission.score !== null ? `${assignExistingSubmission.score}/100` : 'Pending'}</>
+              )}
+            </p>
+            {assignExistingSubmission.feedback && (
+              <div className="mt-2 p-3 bg-white border border-emerald-100 rounded-lg">
+                <p className="text-xs text-gray-500 font-semibold mb-1">Feedback:</p>
+                <p className="text-sm text-gray-700">{assignExistingSubmission.feedback}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Submission form */}
+        {!assignSubmitted && (
+          <div className="space-y-4 pt-4 border-t">
+            <p className="font-semibold text-sm text-gray-800">Submit Your Work</p>
+
+            {config?.allow_text !== false && (
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">Text Response</label>
+                <Textarea
+                  placeholder="Type your answer here..."
+                  rows={4}
+                  value={assignText}
+                  onChange={e => setAssignText(e.target.value)}
+                />
+              </div>
+            )}
+
+            {config?.allow_url !== false && (
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">URL (e.g., Google Doc link)</label>
+                <Input
+                  placeholder="https://..."
+                  value={assignUrl}
+                  onChange={e => setAssignUrl(e.target.value)}
+                />
+              </div>
+            )}
+
+            {config?.allow_file !== false && (
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">Upload File</label>
+                <div
+                  className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-all"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (file) setAssignFile(file);
+                    }}
+                  />
+                  {assignFile ? (
+                    <div className="flex items-center justify-center gap-2 text-indigo-600">
+                      <Paperclip className="w-4 h-4" />
+                      <span className="text-sm font-medium">{assignFile.name}</span>
                     </div>
-                    {!modLocked && (isExp ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />)}
-                  </button>
-                  {isExp && !modLocked && (
+                  ) : (
                     <div>
-                      {modLessons.map(les => {
-                        const isActive = activeLesson?.id === les.id;
-                        const isDoneLes = completedIds.has(les.id);
-                        const isSurvDone = les.type === 'survey' && submittedSurveys.has(les.id);
-                        const isAssignSub = les.type === 'assignment' && !!assignmentSubs[les.id];
-                        const locked = les.type !== 'header' && isLessonLocked(les);
-                        const Icon = LESSON_ICONS[les.type] || FileText;
-                        if (les.type === 'header') {
-                          return (<div key={les.id} className="px-4 py-2 bg-gray-50 border-t border-gray-100"><p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">{les.title}</p></div>);
-                        }
-                        const isComplete = isDoneLes || isSurvDone;
-                        let lessonBtnClass = 'w-full flex items-center gap-2.5 pr-3 py-2.5 text-left text-xs border-t border-gray-50 transition-all ';
-                        if (isActive) { lessonBtnClass += 'bg-indigo-50 border-l-[3px] border-l-indigo-500'; } else if (locked) { lessonBtnClass += 'opacity-50 cursor-not-allowed hover:bg-gray-50'; } else { lessonBtnClass += 'hover:bg-gray-50 cursor-pointer'; }
-                        let iconBgClass = 'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 ';
-                        if (isComplete) iconBgClass += 'bg-emerald-100'; else if (isAssignSub) iconBgClass += 'bg-amber-100'; else if (isActive) iconBgClass += 'bg-indigo-100'; else iconBgClass += 'bg-gray-100';
-                        let textClass = 'flex-1 truncate leading-snug ';
-                        if (isActive) textClass += 'text-indigo-700 font-semibold'; else if (isComplete) textClass += 'text-gray-400'; else if (locked) textClass += 'text-gray-400'; else textClass += 'text-gray-700';
-                        return (
-                          <button key={les.id} onClick={() => selectLesson(les)} style={{ paddingLeft: (16 + (les.indent_level || 0) * 14) + 'px' }} className={lessonBtnClass}>
-                            <div className={iconBgClass}>
-                              {isComplete ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : isAssignSub ? <Clock className="w-3 h-3 text-amber-600" /> : locked ? <Lock className="w-3 h-3 text-gray-400" /> : <Icon className={isActive ? 'w-3 h-3 text-indigo-600' : 'w-3 h-3 text-gray-500'} />}
-                            </div>
-                            <span className={textClass}>{les.title}</span>
-                            {isAssignSub && !isComplete && (<span className="text-[9px] bg-amber-100 text-amber-700 px-1 rounded font-medium">Submitted</span>)}
-                          </button>
-                        );
-                      })}
+                      <Upload className="w-8 h-8 mx-auto text-gray-300 mb-2" />
+                      <p className="text-sm text-gray-400">Click to upload a file</p>
                     </div>
                   )}
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      </aside>
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b px-4 py-3 flex items-center justify-between flex-shrink-0 shadow-sm">
-          <div className="flex items-center gap-3">
-            <button onClick={() => setSidebarOpen(p => !p)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
-              {sidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
-            </button>
-            {activeLesson && (
-              <div className="hidden sm:flex items-center gap-1.5 text-sm text-gray-500">
-                <span className="truncate max-w-[120px] text-gray-400">{modules.find(m => m.id === activeLesson.module_id)?.title}</span>
-                <ChevronRight className="w-3.5 h-3.5 text-gray-300" />
-                <span className="font-semibold text-gray-800 truncate max-w-[200px]">{activeLesson.title}</span>
               </div>
             )}
+
+            <Button onClick={submitAssignment} disabled={assignUploading} className="gap-2">
+              {assignUploading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              {assignUploading ? 'Uploading...' : 'Submit Assignment'}
+            </Button>
           </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={!prevLesson} onClick={() => prevLesson && selectLesson(prevLesson)} className="h-8 px-3"><ChevronLeft className="w-4 h-4" /><span className="hidden sm:inline ml-1">Prev</span></Button>
-            <span className="text-xs text-gray-400 px-1">{activeIdx >= 0 ? (activeIdx + 1) + '/' + totalLessons : '—'}</span>
-            <Button size="sm" variant="outline" disabled={!nextLesson || (nextLesson ? isLessonLocked(nextLesson) : false)} onClick={() => nextLesson && selectLesson(nextLesson)} className="h-8 px-3"><span className="hidden sm:inline mr-1">Next</span><ChevronRight className="w-4 h-4" /></Button>
+        )}
+
+        {isComplete && !assignSubmitted && (
+          <div className="pt-2 flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Assignment completed
           </div>
-        </header>
-        <div ref={contentRef} className="flex-1 overflow-y-auto p-6 md:p-10">{renderContent()}</div>
+        )}
+      </div>
+    );
+  };
+
+  // ── URL Content ──────────────────────────────────────────────────────────
+  const renderUrlContent = () => {
+    const url = activeLesson?.file_url || activeLesson?.content || '';
+    const isComplete = completedIds.has(activeLesson!.id);
+
+    return (
+      <div className="space-y-6">
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 p-6 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-200 rounded-xl hover:shadow-md transition-shadow group"
+          >
+            <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center group-hover:scale-105 transition-transform">
+              <ExternalLink className="w-6 h-6 text-teal-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-teal-800">{activeLesson?.title}</p>
+              <p className="text-sm text-teal-600 truncate max-w-md">{url}</p>
+            </div>
+          </a>
+        ) : (
+          <div className="text-center py-12">
+            <LinkIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+            <p className="text-sm text-gray-400">No link available</p>
+          </div>
+        )}
+
+        {!isComplete && (
+          <div className="pt-4 border-t">
+            <Button onClick={() => markComplete(activeLesson!.id)} className="gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Mark as Complete
+            </Button>
+          </div>
+        )}
+        {isComplete && (
+          <div className="pt-4 border-t flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Lesson completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Sidebar ──────────────────────────────────────────────────────────────
+  const renderSidebar = () => (
+    <div className={`flex flex-col h-full bg-gray-50 border-r ${sidebarOpen ? 'w-80' : 'w-0'} transition-all overflow-hidden`}>
+      {/* Course header */}
+      <div className="p-4 border-b bg-white">
+        <div className="flex items-center gap-2 mb-2">
+          <Button variant="ghost" size="icon" className="w-8 h-8 shrink-0" onClick={() => navigate(-1)}>
+            <ArrowLeft className="w-4 h-4" />
+          </Button>
+          <h2 className="font-bold text-sm text-gray-800 truncate">{course?.title}</h2>
+        </div>
+        {/* Progress bar */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">Course Progress</span>
+            <span className="font-semibold text-indigo-600">{overallProgress}%</span>
+          </div>
+          <Progress value={overallProgress} className="h-2" />
+        </div>
+      </div>
+
+      {/* Modules & Lessons */}
+      <div className="flex-1 overflow-y-auto">
+        {modules.map((mod, modIdx) => {
+          const isExpanded = expandedModules[mod.id] || false;
+          const isLocked = isModuleLocked(mod);
+          const isSequential = mod.sequential_lessons === true;
+          const moduleLessons = lessonsByModule[mod.id] || [];
+          const moduleCompleteCount = moduleLessons
+            .filter(l => l.type !== 'header' && completedIds.has(l.id)).length;
+          const moduleTotalCount = moduleLessons.filter(l => l.type !== 'header').length;
+
+          return (
+            <div key={mod.id} className={`border-b ${isSequential ? 'border-l-2 border-l-indigo-300' : ''}`}>
+              {/* Module header */}
+              <button
+                className={`w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-100 transition-colors ${isLocked ? 'opacity-50' : ''}`}
+                onClick={() => !isLocked && setExpandedModules(prev => ({ ...prev, [mod.id]: !prev[mod.id] }))}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {isLocked ? (
+                    <LockIcon className="w-4 h-4 text-gray-400 shrink-0" />
+                  ) : isExpanded ? (
+                    <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-700 truncate">
+                      {modIdx + 1}. {mod.title}
+                    </p>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                      <span>{moduleCompleteCount}/{moduleTotalCount} completed</span>
+                      {isSequential && (
+                        <span className="inline-flex items-center gap-0.5 text-indigo-500 font-medium">
+                          <LockIcon className="w-2.5 h-2.5" />
+                          Sequential
+                        </span>
+                      )}
+                      {mod.unlock_date && (
+                        <span className="text-blue-500">
+                          {new Date(mod.unlock_date) > new Date()
+                            ? `Unlocks ${new Date(mod.unlock_date).toLocaleDateString()}`
+                            : 'Unlocked'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {moduleTotalCount > 0 && moduleCompleteCount === moduleTotalCount && (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                )}
+              </button>
+
+              {/* Sequential mode banner */}
+              {isExpanded && isSequential && !isLocked && (
+                <div className="mx-4 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-[10px] text-indigo-600">
+                  <LockIcon className="w-3 h-3" />
+                  <span>Complete each lesson in order to unlock the next</span>
+                </div>
+              )}
+
+              {/* Lessons list */}
+              {isExpanded && !isLocked && (
+                <div className="pb-2">
+                  {moduleLessons.map(lesson => {
+                    const locked = isLessonLocked(lesson);
+                    const isComplete = completedIds.has(lesson.id);
+                    const isActive = activeLessonId === lesson.id;
+                    const Icon = getLessonIcon(lesson.type);
+                    const iconColor = getLessonIconColor(lesson.type);
+
+                    if (lesson.type === 'header') {
+                      return (
+                        <div
+                          key={lesson.id}
+                          className="px-6 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 bg-gray-100/50"
+                        >
+                          {lesson.title}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button
+                        key={lesson.id}
+                        className={`w-full flex items-center gap-2.5 px-5 py-2 text-left text-sm transition-all ${
+                          isActive
+                            ? 'bg-indigo-50 text-indigo-700 border-r-2 border-r-indigo-500'
+                            : locked
+                            ? 'opacity-40 cursor-not-allowed'
+                            : 'hover:bg-gray-100 text-gray-600'
+                        }`}
+                        onClick={() => selectLesson(lesson)}
+                        disabled={locked}
+                        style={{ marginLeft: `${(lesson.indent_level || 0) * 16}px` }}
+                      >
+                        {/* Status icon */}
+                        {isComplete ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                        ) : locked ? (
+                          <LockIcon className="w-4 h-4 text-gray-400 shrink-0" />
+                        ) : (
+                          <Icon className={`w-4 h-4 shrink-0 ${iconColor}`} />
+                        )}
+
+                        {/* Title */}
+                        <span className={`truncate flex-1 ${isActive ? 'font-semibold' : ''}`}>
+                          {lesson.title}
+                        </span>
+
+                        {/* Indicators */}
+                        {lesson.file_url && !lesson.file_downloadable && (
+                          <Paperclip className="w-3 h-3 text-gray-300 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // ── Main render ──────────────────────────────────────────────────────────
+  return (
+    <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
+      {/* Sidebar */}
+      {renderSidebar()}
+
+      {/* Toggle sidebar */}
+      <button
+        className="w-8 flex items-center justify-center bg-gray-100 border-r hover:bg-gray-200 transition-colors shrink-0"
+        onClick={() => setSidebarOpen(prev => !prev)}
+      >
+        {sidebarOpen ? <ChevronDown className="w-4 h-4 text-gray-500 rotate-180" /> : <ChevronRight className="w-4 h-4 text-gray-500 rotate-180" />}
+      </button>
+
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar */}
+        {activeLesson && (
+          <div className="flex items-center justify-between px-6 py-3 border-b bg-white">
+            <div className="flex items-center gap-3 min-w-0">
+              {(() => {
+                const Icon = getLessonIcon(activeLesson.type);
+                return <Icon className={`w-5 h-5 shrink-0 ${getLessonIconColor(activeLesson.type)}`} />;
+              })()}
+              <div className="min-w-0">
+                <h1 className="font-bold text-lg text-gray-800 truncate">{activeLesson.title}</h1>
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <Badge variant="outline" className="text-[10px] h-5">
+                    {activeLesson.type}
+                  </Badge>
+                  {(() => {
+                    const mod = modules.find(m => m.id === activeLesson.module_id);
+                    return mod ? <span>{mod.title}</span> : null;
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            {/* Navigation buttons */}
+            <div className="flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm" onClick={goToPrevLesson} className="gap-1">
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Previous</span>
+              </Button>
+              <Button variant="outline" size="sm" onClick={goToNextLesson} className="gap-1">
+                <span className="hidden sm:inline">Next</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-6">
+            {renderLessonContent()}
+          </div>
+        </div>
       </div>
     </div>
   );
