@@ -83,7 +83,10 @@ const SURVEY_Q_TYPES = [
 ];
 
 const QUIZ_Q_TYPES = [
-  { value: 'multiple_choice', label: '✓ Multiple Choice'    },
+  { value: 'multiple_choice', label: '✓ Multiple Choice'       },
+  { value: 'true_false',      label: '⭕ True / False'          },
+  { value: 'short_answer',    label: '✏ Short Answer'           },
+  { value: 'fill_blank',      label: '📝 Fill in the Blank'      },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -558,7 +561,15 @@ export default function AdminCourses() {
   const handleQuestionFieldChange = (field: string, value: string, index?: number) => {
     setCurrentQuestion(prev => {
       if (field === 'q') return { ...prev, q: value };
-      if (field === 'type') return { ...prev, type: value, a: value === 'multiple_choice' ? ['','','',''] : [] };
+      if (field === 'type') {
+        let a: string[] = [];
+        let correct = 0;
+        if (value === 'multiple_choice') { a = ['','','','']; correct = 0; }
+        else if (value === 'true_false') { a = ['True', 'False']; correct = 0; }
+        else if (value === 'short_answer') { a = ['']; correct = -1; }
+        else if (value === 'fill_blank') { a = ['']; correct = -1; }
+        return { ...prev, type: value, a, correct };
+      }
       if (field === 'a' && index !== undefined) { const a = [...prev.a]; a[index] = value; return { ...prev, a }; }
       if (field === 'correct') return { ...prev, correct: Number(value) };
       return prev;
@@ -568,6 +579,8 @@ export default function AdminCourses() {
   const handleAddQuestion = () => {
     if (!currentQuestion.q) return toast({ title: 'Enter question text', variant: 'destructive' });
     if (currentQuestion.type === 'multiple_choice' && currentQuestion.a.filter(x => x).length < 2) return toast({ title: 'Need at least 2 options', variant: 'destructive' });
+    if (currentQuestion.type === 'short_answer' && !currentQuestion.a[0]) return toast({ title: 'Enter the model/expected answer', variant: 'destructive' });
+    if (currentQuestion.type === 'fill_blank' && !currentQuestion.a[0]) return toast({ title: 'Enter the blank answer', variant: 'destructive' });
     setActiveLesson(prev => prev ? { ...prev, quiz_data: [...(prev.quiz_data || []), currentQuestion] } : null);
     setCurrentQuestion({ q: '', type: 'multiple_choice', a: ['','','',''], correct: 0 });
     toast({ title: 'Question added ✓' });
@@ -1112,16 +1125,56 @@ export default function AdminCourses() {
                         ))}
                       </div>
                     )}
+                    {q.type === 'true_false' && (
+                      <div className="mt-2 flex gap-2">
+                        <span className={`text-xs px-3 py-1 rounded-lg ${q.correct===0?'bg-emerald-100 text-emerald-700 font-semibold':'bg-gray-100 text-gray-500'}`}>True {q.correct===0&&'✓'}</span>
+                        <span className={`text-xs px-3 py-1 rounded-lg ${q.correct===1?'bg-emerald-100 text-emerald-700 font-semibold':'bg-gray-100 text-gray-500'}`}>False {q.correct===1&&'✓'}</span>
+                      </div>
+                    )}
+                    {q.type === 'short_answer' && (
+                      <div className="mt-2">
+                        <span className="text-xs text-gray-500">Expected answer: </span>
+                        <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-medium">{q.a?.[0] || '(not set)'}</span>
+                      </div>
+                    )}
+                    {q.type === 'fill_blank' && (
+                      <div className="mt-2">
+                        <span className="text-xs text-gray-500">Blank answer: </span>
+                        <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded font-medium">{q.a?.[0] || '(not set)'}</span>
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div className="p-4 border-2 border-dashed border-gray-200 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2"><Label className="flex-shrink-0">Type</Label><Select value={currentQuestion.type} onValueChange={v => handleQuestionFieldChange('type', v)}><SelectTrigger className="w-44"><SelectValue/></SelectTrigger><SelectContent>{QUIZ_Q_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent></Select></div>
+                  <div className="flex items-center gap-2"><Label className="flex-shrink-0">Type</Label><Select value={currentQuestion.type} onValueChange={v => handleQuestionFieldChange('type', v)}><SelectTrigger className="w-48"><SelectValue/></SelectTrigger><SelectContent>{QUIZ_Q_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent></Select></div>
                   <Input placeholder="Question text" value={currentQuestion.q} onChange={e => handleQuestionFieldChange('q', e.target.value)}/>
                   {currentQuestion.type === 'multiple_choice' && (
                     <>
                       <div className="grid grid-cols-2 gap-2">{['A','B','C','D'].map((l, i) => <Input key={i} placeholder={`Option ${l}`} value={currentQuestion.a[i]} onChange={e => handleQuestionFieldChange('a', e.target.value, i)}/>)}</div>
                       <Select value={String(currentQuestion.correct)} onValueChange={v => handleQuestionFieldChange('correct', v)}><SelectTrigger><SelectValue placeholder="Correct answer"/></SelectTrigger><SelectContent>{['A','B','C','D'].map((l, i) => <SelectItem key={i} value={String(i)}>✓ Option {l}</SelectItem>)}</SelectContent></Select>
                     </>
+                  )}
+                  {currentQuestion.type === 'true_false' && (
+                    <div className="flex items-center gap-3">
+                      <Label className="flex-shrink-0">Correct answer:</Label>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => handleQuestionFieldChange('correct', '0')} className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${currentQuestion.correct === 0 ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'}`}>True</button>
+                        <button type="button" onClick={() => handleQuestionFieldChange('correct', '1')} className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${currentQuestion.correct === 1 ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'}`}>False</button>
+                      </div>
+                    </div>
+                  )}
+                  {currentQuestion.type === 'short_answer' && (
+                    <div>
+                      <Label className="text-xs text-gray-500">Model / Expected Answer (students will see this after grading)</Label>
+                      <Textarea placeholder="Enter the expected answer..." value={currentQuestion.a[0] || ''} onChange={e => handleQuestionFieldChange('a', e.target.value, 0)} className="mt-1" rows={2}/>
+                    </div>
+                  )}
+                  {currentQuestion.type === 'fill_blank' && (
+                    <div>
+                      <Label className="text-xs text-gray-500">Correct Answer for the Blank (use ___ in question text for the blank)</Label>
+                      <Input placeholder="e.g. photosynthesis" value={currentQuestion.a[0] || ''} onChange={e => handleQuestionFieldChange('a', e.target.value, 0)} className="mt-1"/>
+                      <p className="text-[11px] text-gray-400 mt-1">Tip: Write your question like: &quot;The process by which plants convert sunlight into energy is called ___.&quot;</p>
+                    </div>
                   )}
                   <Button size="sm" className="w-full" onClick={handleAddQuestion}><Plus className="w-4 h-4 mr-1"/>Add Question</Button>
                 </div>
