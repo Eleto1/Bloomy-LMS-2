@@ -19,6 +19,68 @@ import {
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SMART PASTE UTILITY — converts rich HTML from clipboard to clean plain text
+// ─────────────────────────────────────────────────────────────────────────────
+function handleSmartPaste(
+  e: React.ClipboardEvent<HTMLTextAreaElement>,
+  setValue: (val: string) => void
+) {
+  const clipboard = e.clipboardData;
+  const html = clipboard.getData('text/html');
+  const text = clipboard.getData('text/plain');
+
+  // If there's HTML content (from Word, Google Docs, browser, etc.), convert it
+  if (html) {
+    e.preventDefault();
+    const clean = htmlToPlainText(html);
+    setValue(clean);
+    return;
+  }
+
+  // If there's only plain text, allow default paste behavior
+  if (text) {
+    e.preventDefault();
+    setValue(text);
+  }
+}
+
+function htmlToPlainText(html: string): string {
+  // Create a temporary DOM element to parse HTML
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+
+  // Replace block elements with newlines before extracting text
+  const blockElements = tmp.querySelectorAll('div, p, br, h1, h2, h3, h4, h5, h6, li, tr, hr, blockquote, pre');
+  blockElements.forEach(el => {
+    if (el.tagName === 'BR') {
+      el.replaceWith(document.createTextNode('\n'));
+    } else if (el.tagName === 'HR') {
+      el.replaceWith(document.createTextNode('\n────────────────\n'));
+    } else {
+      el.prepend(document.createTextNode('\n'));
+    }
+  });
+
+  // Convert list items to bullet points
+  tmp.querySelectorAll('li').forEach(li => {
+    const prefix = li.closest('ol') ? `${Array.from(li.parentElement!.children).indexOf(li) + 1}. ` : '• ';
+    li.prepend(document.createTextNode(prefix));
+  });
+
+  // Extract text and clean up
+  let plain = tmp.textContent || tmp.innerText || '';
+
+  // Clean up excessive newlines (3+ → 2)
+  plain = plain.replace(/\n{3,}/g, '\n\n');
+
+  // Remove leading/trailing whitespace on each line
+  plain = plain.split('\n').map(line => line.trim()).join('\n');
+
+  // Trim final result
+  return plain.trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 interface Course {
@@ -967,7 +1029,7 @@ export default function StudentCourseViewer() {
       <LayoutDashboard className="w-12 h-12 mx-auto mb-4 text-indigo-300" />
       <h2 className="text-2xl font-bold text-gray-700">{activeLesson?.title}</h2>
       {activeLesson?.content && (
-        <p className="text-gray-500 mt-2 max-w-md mx-auto">{activeLesson.content}</p>
+        <div className="text-gray-500 mt-2 max-w-md mx-auto prose prose-sm" dangerouslySetInnerHTML={{ __html: activeLesson.content }} />
       )}
     </div>
   );
@@ -1263,11 +1325,25 @@ export default function StudentCourseViewer() {
                 )}
                 {q.type === 'text' && (
                   <Textarea
-                    placeholder="Type your answer here..."
+                    placeholder="Type or paste your answer here..."
                     rows={3}
                     className="resize-none"
                     value={surveyResponses[qIdx]?.answer || ''}
                     onChange={e => updateResponse(qIdx, e.target.value, 'text')}
+                    onPaste={e => {
+                      const clipboard = e.clipboardData;
+                      const html = clipboard.getData('text/html');
+                      const text = clipboard.getData('text/plain');
+                      if (html) {
+                        e.preventDefault();
+                        updateResponse(qIdx, htmlToPlainText(html), 'text');
+                        return;
+                      }
+                      if (text) {
+                        e.preventDefault();
+                        updateResponse(qIdx, text, 'text');
+                      }
+                    }}
                   />
                 )}
               </div>
@@ -1373,10 +1449,11 @@ export default function StudentCourseViewer() {
               <div>
                 <label className="text-xs font-medium text-gray-600 block mb-1">Text Response</label>
                 <Textarea
-                  placeholder="Type your answer here..."
+                  placeholder="Type or paste your answer here..."
                   rows={4}
                   value={assignText}
                   onChange={e => setAssignText(e.target.value)}
+                  onPaste={e => handleSmartPaste(e, setAssignText)}
                 />
               </div>
             )}

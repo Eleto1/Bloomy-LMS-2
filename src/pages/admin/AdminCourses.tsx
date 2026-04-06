@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import RichTextEditor from './RichTextEditor';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -17,6 +18,45 @@ import {
   Globe, AlignLeft, FileUp, AlertCircle, CheckCircle2, User, Users, Lock,
   GripVertical
 } from 'lucide-react';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMART PASTE UTILITY — converts rich HTML from clipboard to clean plain text
+// ─────────────────────────────────────────────────────────────────────────────
+function handleSmartPaste(
+  e: React.ClipboardEvent<HTMLTextAreaElement>,
+  setValue: (val: string) => void
+) {
+  const clipboard = e.clipboardData;
+  const html = clipboard.getData('text/html');
+  const text = clipboard.getData('text/plain');
+  if (html) {
+    e.preventDefault();
+    setValue(htmlToPlainText(html));
+    return;
+  }
+  if (text) {
+    e.preventDefault();
+    setValue(text);
+  }
+}
+
+function htmlToPlainText(html: string): string {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  tmp.querySelectorAll('div, p, br, h1, h2, h3, h4, h5, h6, li, tr, hr, blockquote, pre').forEach(el => {
+    if (el.tagName === 'BR') el.replaceWith(document.createTextNode('\n'));
+    else if (el.tagName === 'HR') el.replaceWith(document.createTextNode('\n────────────────\n'));
+    else el.prepend(document.createTextNode('\n'));
+  });
+  tmp.querySelectorAll('li').forEach(li => {
+    const prefix = li.closest('ol') ? `${Array.from(li.parentElement!.children).indexOf(li) + 1}. ` : '• ';
+    li.prepend(document.createTextNode(prefix));
+  });
+  let plain = tmp.textContent || tmp.innerText || '';
+  plain = plain.replace(/\n{3,}/g, '\n\n');
+  plain = plain.split('\n').map(line => line.trim()).join('\n');
+  return plain.trim();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -631,7 +671,7 @@ export default function AdminCourses() {
           <DialogHeader><DialogTitle>{editing ? 'Edit' : 'Create'} Course</DialogTitle><DialogDescription>Configure course details, assignment, and linkage.</DialogDescription></DialogHeader>
           <div className="space-y-4 py-2">
             <div><Label>Title *</Label><Input value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="e.g. Digital Marketing Essentials"/></div>
-            <div><Label>Description</Label><Textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} rows={3}/></div>
+            <div><Label>Description</Label><RichTextEditor content={form.description||''} onChange={v => setForm(prev => ({...prev, description: v}))} placeholder="Course description..." minHeight="120px" className="mt-1"/></div>
             
             {/* ✅ COHORT SELECTOR (NEW) */}
             <div>
@@ -880,7 +920,7 @@ export default function AdminCourses() {
             {activeLesson?.type !== 'assignment' && (
               <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
                 <Label className="text-purple-700">✨ AI Content Generator</Label>
-                <Textarea placeholder="Describe what you want to generate..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} className="mt-1.5" rows={2}/>
+                <Textarea placeholder="Describe what you want to generate..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} className="mt-1.5" rows={2} onPaste={e => handleSmartPaste(e, setAiPrompt)}/>
                 <Button onClick={handleAIGenerate} disabled={isGenerating} className="mt-2 bg-purple-600 hover:bg-purple-700 w-full">
                   {isGenerating ? <><Loader2 className="w-4 h-4 animate-spin mr-2"/>Generating...</> : 'Generate Content'}
                 </Button>
@@ -889,7 +929,7 @@ export default function AdminCourses() {
 
             {activeLesson?.type === 'text' && (
               <div className="space-y-3">
-                <div><Label>Content</Label><Textarea rows={8} value={activeLesson.content||''} onChange={e => setActiveLesson(prev => prev?{...prev,content:e.target.value}:null)} placeholder="Write lesson content..."/></div>
+                <div><Label>Content</Label><RichTextEditor content={activeLesson.content||''} onChange={v => setActiveLesson(prev => prev?{...prev,content:v}:null)} placeholder="Write or paste your lesson content here..." minHeight="300px" className="mt-1"/></div>
                 <div className="border-t pt-3 space-y-3">
                   <Label className="text-sm text-gray-500">Attach File (PDF, DOC, etc.)</Label>
                   <Input type="file" className="mt-1" onChange={handleFileUpload} disabled={uploadingFile}/>
@@ -942,7 +982,7 @@ export default function AdminCourses() {
             )}
 
             {activeLesson?.type === 'header' && (
-              <div><Label>Section Description (optional)</Label><Textarea rows={2} value={activeLesson.content||''} onChange={e => setActiveLesson(prev => prev?{...prev,content:e.target.value}:null)} placeholder="Brief description of this section..."/></div>
+              <div><Label>Section Description (optional)</Label><RichTextEditor content={activeLesson.content||''} onChange={v => setActiveLesson(prev => prev?{...prev,content:v}:null)} placeholder="Brief description of this section..." minHeight="120px" className="mt-1"/></div>
             )}
 
             {activeLesson?.type === 'assignment' && (
@@ -965,11 +1005,11 @@ export default function AdminCourses() {
                       </button>
                     ))}
                   </div>
-                  {assignConfig.instruction_type === 'text' && <Textarea rows={6} value={assignConfig.instructions} placeholder="Write the assignment instructions here. Be clear about what's expected, requirements, and any format guidelines..." onChange={e => setAssignConfig(prev => ({...prev, instructions: e.target.value}))} className="mt-2"/>}
+                  {assignConfig.instruction_type === 'text' && <RichTextEditor content={assignConfig.instructions} onChange={v => setAssignConfig(prev => ({...prev, instructions: v}))} placeholder="Write or paste the assignment instructions here..." minHeight="210px" className="mt-2"/>}
                   {assignConfig.instruction_type === 'url' && (
                     <div className="mt-2">
                       <div className="relative"><Globe className="absolute left-3 top-3 w-4 h-4 text-gray-400"/><Input type="url" placeholder="https://docs.google.com/... or any brief URL" className="pl-10" value={assignConfig.resource_url || ''} onChange={e => setAssignConfig(prev => ({...prev, resource_url: e.target.value}))}/></div>
-                      <Textarea rows={3} className="mt-2" placeholder="Additional text instructions (optional)..." value={assignConfig.instructions} onChange={e => setAssignConfig(prev => ({...prev, instructions: e.target.value}))}/>
+                      <RichTextEditor content={assignConfig.instructions} onChange={v => setAssignConfig(prev => ({...prev, instructions: v}))} placeholder="Additional text instructions (optional)..." minHeight="105px" className="mt-2"/>
                     </div>
                   )}
                   {assignConfig.instruction_type === 'file' && (
@@ -978,7 +1018,7 @@ export default function AdminCourses() {
                         <input type="file" className="hidden" onChange={handleAssignmentResourceUpload} disabled={uploadingAssignFile}/>
                         {uploadingAssignFile ? <><Loader2 className="w-5 h-5 text-indigo-500 animate-spin"/><p className="text-sm text-indigo-600">Uploading...</p></> : activeLesson.file_url ? <><CheckCircle2 className="w-5 h-5 text-emerald-500"/><p className="text-sm font-medium text-emerald-700">File uploaded</p><a href={activeLesson.file_url} target="_blank" className="text-xs text-indigo-600 underline">View file</a></> : <><Upload className="w-6 h-6 text-gray-300"/><p className="text-sm font-medium text-gray-500">Upload assignment brief (PDF, DOC, etc.)</p></>}
                       </label>
-                      <Textarea rows={3} placeholder="Additional text instructions (optional)..." value={assignConfig.instructions} onChange={e => setAssignConfig(prev => ({...prev, instructions: e.target.value}))}/>
+                      <RichTextEditor content={assignConfig.instructions} onChange={v => setAssignConfig(prev => ({...prev, instructions: v}))} placeholder="Additional text instructions (optional)..." minHeight="105px"/>
                     </div>
                   )}
                   {activeLesson.file_url && (
