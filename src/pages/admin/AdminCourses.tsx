@@ -730,10 +730,27 @@ export default function AdminCourses() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={builderOpen} onOpenChange={setBuilderOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Course Builder — {activeCourse?.title}</DialogTitle><DialogDescription>Build modules, lessons, schedule and cohort links.</DialogDescription></DialogHeader>
-          <Tabs defaultValue="modules" className="w-full mt-4">
+      {/* ── FULL-SCREEN COURSE BUILDER ────────────────────────────────── */}
+      {builderOpen && (
+        <div className="fixed inset-0 z-50 bg-gray-50 flex flex-col">
+          {/* Sticky header */}
+          <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setBuilderOpen(false)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors text-gray-500 hover:text-gray-700">
+                <X className="w-5 h-5" />
+              </button>
+              <div>
+                <h2 className="font-bold text-xl text-gray-900">Course Builder</h2>
+                <p className="text-sm text-gray-500">{activeCourse?.title} — {activeCourse?.program}</p>
+              </div>
+            </div>
+            <Button variant="outline" onClick={() => setBuilderOpen(false)}>Done / Close</Button>
+          </div>
+
+          {/* Full-screen scrollable content */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-5xl mx-auto p-6">
+          <Tabs defaultValue="modules" className="w-full">
             <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="modules">Content</TabsTrigger><TabsTrigger value="schedule">Schedule</TabsTrigger><TabsTrigger value="cohorts">Cohorts</TabsTrigger></TabsList>
 
             <TabsContent value="modules">
@@ -885,8 +902,10 @@ export default function AdminCourses() {
               </div>
             </TabsContent>
           </Tabs>
-        </DialogContent>
-      </Dialog>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── LESSON EDITOR MODAL ───────────────────────────────────── */}
       <Dialog open={lessonEditorOpen} onOpenChange={setLessonEditorOpen}>
