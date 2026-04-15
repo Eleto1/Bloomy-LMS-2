@@ -48,6 +48,12 @@ interface AssessmentSub {
   submitted_at: string; quiz_answers?: { questionIndex: number; selectedOption: number | null }[];
 }
 
+// FIX: Added quiz_result row type
+interface QuizResultRow {
+  user_id: string; lesson_id: string; course_id: string;
+  score: number; total_questions: number; passed: boolean; created_at: string;
+}
+
 interface StudentGrade {
   quizAvg: number | null;
   assignAvg: number | null;
@@ -58,7 +64,7 @@ interface StudentGrade {
   grade: string;
   gpa: number;
   color: string;
-  quizDetails: { lesson: Lesson; score: number | null; completed: boolean }[];
+  quizDetails: { lesson: Lesson; score: number | null; completed: boolean; totalQuestions?: number | null }[];
   assignDetails: { lesson: Lesson; sub: AssignmentSub | null }[];
   moduleProgress: { module: Module; done: number; total: number }[];
   finalDetails: { assessment: CourseAssessment; sub: AssessmentSub | null }[];
@@ -102,6 +108,51 @@ function SubStatusBadge({ status }: { status: string }) {
   return <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700"><Clock className="w-3 h-3" />Pending</span>;
 }
 
+// FIX: Case-insensitive lesson type matching
+function lessonTypeMatches(lessonType: string, targetType: string): boolean {
+  return lessonType.toLowerCase() === targetType.toLowerCase();
+}
+
+// QUIZ DIAGNOSTIC: Simple type for the visible debug panel
+interface QuizDebugInfo {
+  courseQuizzes: { lesson_id: string; title: string }[];
+  quizResultsFound: { user_id: string; lesson_id: string; score: number; total: number; pct: number }[];
+  queryError: string | null;
+  matchCount: number;
+}
+
+async function fetchQuizDebug(courseId: string): Promise<QuizDebugInfo> {
+  const info: QuizDebugInfo = { courseQuizzes: [], quizResultsFound: [], queryError: null, matchCount: 0 };
+  try {
+    // Get all quiz lessons for this course
+    const { data: mods } = await supabase.from('modules').select('id').eq('course_id', courseId);
+    const modIds = (mods || []).map(m => m.id);
+    if (modIds.length === 0) return info;
+    const { data: qLessons } = await supabase.from('lessons').select('id,title,type').in('module_id', modIds);
+    const quizLessons = (qLessons || []).filter(l => l.type && l.type.toLowerCase() === 'quiz');
+    info.courseQuizzes = quizLessons.map(l => ({ lesson_id: l.id, title: l.title }));
+    const lessonIds = quizLessons.map(l => l.id);
+
+    // Get ALL quiz_results for this course (no user filter — diagnostic only)
+    const { data: qrData, error: qrErr } = await supabase.from('quiz_results')
+      .select('user_id,lesson_id,course_id,score,total_questions,passed,created_at')
+      .eq('course_id', courseId);
+    if (qrErr) { info.queryError = qrErr.message; return info; }
+    const rows = qrData || [];
+    info.quizResultsFound = rows.map(r => ({
+      user_id: r.user_id, lesson_id: r.lesson_id,
+      score: r.score ?? 0, total: r.total_questions ?? 0,
+      pct: r.total_questions > 0 ? Math.round((r.score / r.total_questions) * 100) : 0,
+    }));
+    // Count how many quiz_results lesson_ids match actual quiz lesson_ids
+    const lessonIdSet = new Set(lessonIds);
+    info.matchCount = rows.filter(r => lessonIdSet.has(r.lesson_id)).length;
+  } catch (e: any) {
+    info.queryError = e.message;
+  }
+  return info;
+}
+
 async function fetchGradesData(
   studentIds: string[],
   courseId: string
@@ -117,7 +168,16 @@ async function fetchGradesData(
     .in('module_id', modIds).order('order_index');
   const lessonList = lessData || [];
   const lessonIds = lessonList.map(l => l.id);
-  if (lessonIds.length === 0) return { gradeMap: {}, modList, lessonList };
+  if (lessonIds.length === 0) return empty;
+
+  // Fetch quiz_results separately so a missing table doesn't crash everything
+  const quizResSafe = await supabase.from('quiz_results')
+    .select('user_id,lesson_id,course_id,score,total_questions,passed,created_at')
+    .in('user_id', studentIds).in('lesson_id', lessonIds)
+    .then(res => {
+      if (res.error) console.warn('[Gradebook] quiz_results query error:', res.error.message);
+      return res;
+    });
 
   const [progRes, assignRes, attendRes, faAssessRes] = await Promise.all([
     supabase.from('lesson_progress')
@@ -138,6 +198,14 @@ async function fetchGradesData(
   const assignRows = (assignRes.data || []) as AssignmentSub[];
   const attendRows = (attendRes.data || []) as AttendanceRow[];
   const faAssessList = (faAssessRes.data || []) as CourseAssessment[];
+  const quizResultRows: QuizResultRow[] = ((quizResSafe.data || []) as any[]).filter(r =>
+    r && typeof r === 'object' && r.user_id && r.lesson_id
+  ) as QuizResultRow[];
+
+  if (progRes.error) {
+    console.warn('[Gradebook] lesson_progress query error:', progRes.error.message);
+  }
+
   const faIdList = faAssessList.map(a => a.id);
 
   let faSubRows: AssessmentSub[] = [];
@@ -147,16 +215,43 @@ async function fetchGradesData(
     faSubRows = (subsData || []) as AssessmentSub[];
   }
 
-  const quizLessons = lessonList.filter(l => l.type === 'quiz');
-  const assignLessons = lessonList.filter(l => l.type === 'assignment');
-  const nonHeaders = lessonList.filter(l => l.type !== 'header');
+  const quizLessons = lessonList.filter(l => lessonTypeMatches(l.type, 'quiz'));
+  const assignLessons = lessonList.filter(l => lessonTypeMatches(l.type, 'assignment'));
+  const nonHeaders = lessonList.filter(l => !lessonTypeMatches(l.type, 'header'));
+
+  console.log('[Gradebook] Quiz results found:', quizResultRows.length, 'Quiz lessons:', quizLessons.length);
+
   const gradeMap: Record<string, StudentGrade> = {};
 
   studentIds.forEach(sid => {
-    const quizDetails = quizLessons.map(l => {
-      const pr = progRows.find(p => p.user_id === sid && p.lesson_id === l.id);
-      return { lesson: l, score: pr?.score ?? null, completed: pr?.completed ?? false };
+    try {
+    const quizResultMap = new Map<string, QuizResultRow>();
+    quizResultRows.forEach(qr => {
+      if (qr && qr.user_id === sid) quizResultMap.set(qr.lesson_id, qr);
     });
+
+    const quizDetails = quizLessons.map(l => {
+      const qr = quizResultMap.get(l.id);
+      const pr = progRows.find(p => p.user_id === sid && p.lesson_id === l.id);
+
+      let score: number | null = null;
+      let completed = pr?.completed ?? false;
+      let totalQuestions: number | null = null;
+
+      if (qr) {
+        totalQuestions = Number(qr.total_questions) || 0;
+        const qrScore = Number(qr.score) || 0;
+        score = totalQuestions > 0
+          ? Math.round((qrScore / totalQuestions) * 100)
+          : null;
+        completed = true;
+      } else if (pr && pr.score !== null && pr.score !== undefined) {
+        score = pr.score;
+      }
+
+      return { lesson: l, score, completed, totalQuestions };
+    });
+
     const quizScores = quizDetails.map(q => q.score).filter((s): s is number => s !== null && !isNaN(s));
     const quizAvg = quizScores.length > 0 ? Math.round(quizScores.reduce((a, b) => a + b, 0) / quizScores.length) : null;
 
@@ -192,6 +287,10 @@ async function fetchGradesData(
 
     const stdProg = progRows.filter(p => p.user_id === sid && p.completed);
     const doneIds = new Set(stdProg.map(p => p.lesson_id));
+    // FIX: Also count quiz lessons as completed if there's a quiz_result
+    quizResultRows.forEach(qr => {
+      if (qr.user_id === sid) doneIds.add(qr.lesson_id);
+    });
     const doneCount = nonHeaders.filter(l => doneIds.has(l.id)).length;
     const lessonsPct = nonHeaders.length > 0 ? Math.round((doneCount / nonHeaders.length) * 100) : 0;
 
@@ -210,6 +309,9 @@ async function fetchGradesData(
     const { grade, gpa, color } = calcGrade(weighted);
 
     gradeMap[sid] = { quizAvg, assignAvg, attendPct, finalAvg, lessonsPct, weighted, grade, gpa, color, quizDetails, assignDetails, moduleProgress, finalDetails };
+    } catch (err) {
+      console.error('[Gradebook] Error calculating grades for student', sid, err);
+    }
   });
 
   return { gradeMap, modList, lessonList };
@@ -228,6 +330,7 @@ export default function AdminGradebook() {
   const [modules, setModules] = useState<Module[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [grades, setGrades] = useState<Record<string, StudentGrade>>({});
+  const [quizDebug, setQuizDebug] = useState<QuizDebugInfo | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [loadingInit, setLoadingInit] = useState(true);
@@ -345,12 +448,18 @@ export default function AdminGradebook() {
       setStudents(studentList);
       if (studentList.length === 0) { setLoading(false); return; }
 
+      console.log('[Gradebook] Loading data for', studentList.length, 'students, course:', filterCourseId);
       const result = await fetchGradesData(studentList.map(s => s.id), filterCourseId);
       setModules(result.modList);
       setLessons(result.lessonList);
       setGrades(result.gradeMap);
+      // Run quiz diagnostic separately (won't affect grade calculation)
+      fetchQuizDebug(filterCourseId).then(dbg => setQuizDebug(dbg));
     } catch (e: any) {
+      console.error('[Gradebook] loadData error:', e);
       toast({ title: 'Error loading gradebook', description: e.message, variant: 'destructive' });
+      setGrades({});  // Clear grades so table doesn't render with missing data
+      setStudents([]); // Clear students so table can't crash on undefined grades
     } finally { setLoading(false); }
   };
 
@@ -359,6 +468,19 @@ export default function AdminGradebook() {
     loadData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCourseId, filterCohortName, cohorts]);
+
+  // Auto-refresh when browser tab/window gains focus
+  useEffect(() => {
+    const onFocus = () => {
+      if (filterCourseId !== 'all' && !loading) {
+        console.log('[Gradebook] Window focused — auto-refreshing data');
+        loadData();
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterCourseId, filterCohortName, loading, cohorts]);
 
   const loadSearchStudent = async (student: Student) => {
     const program = student.cohorts?.course;
@@ -379,6 +501,7 @@ export default function AdminGradebook() {
       setLessons(result.lessonList);
       setGrades(prev => ({ ...prev, ...result.gradeMap }));
     } catch (e: any) {
+      console.error('[Gradebook] loadSearchStudent error:', e);
       toast({ title: 'Error loading grades', description: e.message, variant: 'destructive' });
     } finally { setDirectLoading(false); }
   };
@@ -522,7 +645,7 @@ export default function AdminGradebook() {
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="font-bold text-gray-900 truncate text-lg">{s.full_name}</h3>
-                <p className="text-xs text-gray-500">{s.cohorts?.name || '—'} · {s.cohorts?.course || '—'}</p>
+                <p className="text-xs text-gray-500">{s.cohorts?.name || '—'} &middot; {s.cohorts?.course || '—'}</p>
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <div className={`px-4 py-2 rounded-xl text-2xl font-black ${g.color}`}>{g.grade}</div>
@@ -579,7 +702,7 @@ export default function AdminGradebook() {
       <div className="flex justify-between items-start flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Gradebook</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Quiz 25% · Assignment 25% · Attendance 10% · Final 40%</p>
+          <p className="text-gray-500 text-sm mt-0.5">Quiz 25% &middot; Assignment 25% &middot; Attendance 10% &middot; Final 40%</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadData} disabled={loading || filterCourseId === 'all'}>
@@ -669,7 +792,7 @@ export default function AdminGradebook() {
                           <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center">{initials}</div>
                           <div>
                             <p className="text-sm font-semibold text-gray-900">{s.full_name}</p>
-                            <p className="text-xs text-gray-400">{s.email} · {s.cohorts?.name || '—'} · {s.cohorts?.course || '—'}</p>
+                            <p className="text-xs text-gray-400">{s.email} &middot; {s.cohorts?.name || '—'} &middot; {s.cohorts?.course || '—'}</p>
                           </div>
                         </div>
                         <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => handleSearchClick(s)}>
@@ -699,8 +822,54 @@ export default function AdminGradebook() {
         <Card className="border-0 shadow-sm">
           <CardContent className="py-16 text-center">
             <BarChart3 className="w-10 h-10 text-gray-200 mx-auto mb-3" />
-            <p className="text-gray-500 font-medium">Select a Cohort → Program → Course to load class grades</p>
+            <p className="text-gray-500 font-medium">Select a Cohort &rarr; Program &rarr; Course to load class grades</p>
             <p className="text-gray-400 text-sm mt-1">Or use the search box above to look up a student directly</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* VISIBLE QUIZ DEBUG PANEL */}
+      {!isSearchMode && !loading && filterCourseId !== 'all' && quizDebug && (
+        <Card className="border-2 border-amber-300 bg-amber-50">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-bold text-amber-800">Quiz Data Diagnostic</p>
+              <button onClick={() => setQuizDebug(null)} className="text-xs text-amber-600 hover:text-amber-800 underline">Hide</button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><span className="font-semibold text-amber-700">Quiz Lessons in Course:</span> <span className="font-bold text-gray-800">{quizDebug.courseQuizzes.length}</span></div>
+              <div><span className="font-semibold text-amber-700">Quiz Results in DB:</span> <span className="font-bold text-gray-800">{quizDebug.quizResultsFound.length}</span></div>
+              <div><span className="font-semibold text-amber-700">Results Matching Lessons:</span> <span className={`font-bold ${quizDebug.matchCount > 0 ? 'text-emerald-700' : 'text-red-700'}`}>{quizDebug.matchCount}</span></div>
+              <div><span className="font-semibold text-amber-700">Error:</span> <span className={quizDebug.queryError ? 'text-red-700' : 'text-emerald-700'}>{quizDebug.queryError || 'None'}</span></div>
+            </div>
+            {quizDebug.courseQuizzes.length > 0 && (
+              <div className="mt-2 text-xs">
+                <span className="font-semibold text-amber-700">Quiz Lesson IDs: </span>
+                <span className="font-mono text-[10px] text-gray-500 break-all">{quizDebug.courseQuizzes.map(q => q.lesson_id.slice(0,8) + ' (' + q.title + ')').join(', ')}</span>
+              </div>
+            )}
+            {quizDebug.quizResultsFound.length > 0 && (
+              <div className="mt-2 text-xs">
+                <span className="font-semibold text-amber-700">Quiz Results in DB: </span>
+                <div className="mt-1 bg-white rounded p-2 space-y-1">
+                  {quizDebug.quizResultsFound.map((qr, i) => (
+                    <div key={i} className="font-mono text-[10px] text-gray-600">
+                      user: {qr.user_id.slice(0,8)}... | lesson: {qr.lesson_id.slice(0,8)}... | {qr.score}/{qr.total} = {qr.pct}%
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {quizDebug.matchCount === 0 && quizDebug.courseQuizzes.length > 0 && quizDebug.quizResultsFound.length > 0 && (
+              <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-700">
+                The quiz results in the database have lesson_ids that DO NOT match any quiz lesson in this course. The gradebook cannot display them because the IDs are different.
+              </div>
+            )}
+            {quizDebug.quizResultsFound.length === 0 && !quizDebug.queryError && (
+              <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-700">
+                No quiz_results found for this course at all. Students may not have submitted quizzes yet, or RLS is blocking access.
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -785,6 +954,7 @@ export default function AdminGradebook() {
                 </TableRow>
               ) : filtered.map(s => {
                 const g = grades[s.id];
+                if (!g) return null; // Safety: skip if grade data not loaded yet
                 const initials = s.full_name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
                 return (
                   <TableRow key={s.id} className="hover:bg-indigo-50/30 transition-colors">
@@ -803,7 +973,7 @@ export default function AdminGradebook() {
                     <TableCell className="text-center"><ScoreBadge value={g?.attendPct ?? null} /></TableCell>
                     <TableCell className="text-center"><ScoreBadge value={g?.finalAvg ?? null} /></TableCell>
                     <TableCell className="text-center border-l-2">
-                      {g?.weighted !== null
+                      {g && g.weighted !== null
                         ? <span className="text-base font-black text-gray-900">{g.weighted}%</span>
                         : <span className="text-xs text-gray-300">—</span>}
                     </TableCell>
@@ -828,7 +998,7 @@ export default function AdminGradebook() {
 
       {/* DETAIL MODAL */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" key={detailStudent?.id || 'none'}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center">
@@ -836,7 +1006,7 @@ export default function AdminGradebook() {
               </div>
               {detailStudent?.full_name}
             </DialogTitle>
-            <DialogDescription>{detailStudent?.cohorts?.name} · {detailStudent?.cohorts?.course}</DialogDescription>
+            <DialogDescription>{detailStudent?.cohorts?.name} &middot; {detailStudent?.cohorts?.course}</DialogDescription>
           </DialogHeader>
 
           {detailStudent && grades[detailStudent.id] && (() => {
@@ -891,11 +1061,14 @@ export default function AdminGradebook() {
                       <HelpCircle className="w-4 h-4 text-purple-500" /> Quiz Results
                     </p>
                     <div className="space-y-1.5">
-                      {g.quizDetails.map(({ lesson, score, completed }) => (
+                      {g.quizDetails.map(({ lesson, score, completed, totalQuestions }) => (
                         <div key={lesson.id} className="flex items-center justify-between p-2.5 bg-gray-50 rounded-lg">
                           <div className="flex items-center gap-2">
                             {completed ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <Clock className="w-3.5 h-3.5 text-gray-300" />}
                             <span className="text-sm text-gray-700">{lesson.title}</span>
+                            {totalQuestions !== null && totalQuestions > 0 && (
+                              <span className="text-[10px] text-gray-400">({totalQuestions} questions)</span>
+                            )}
                           </div>
                           <ScoreBadge value={score} />
                         </div>
@@ -971,7 +1144,7 @@ export default function AdminGradebook() {
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-rose-100 text-rose-700">
-                                  {isQuiz ? '❓ Quiz' : assessment.type === 'File' ? '📄 File' : '📝 Exam'}
+                                  {isQuiz ? 'Quiz' : assessment.type === 'File' ? 'File' : 'Exam'}
                                 </span>
                                 <span className="text-sm font-medium text-gray-800">{assessment.title}</span>
                               </div>
@@ -1110,7 +1283,7 @@ export default function AdminGradebook() {
             <DialogDescription>
               <strong>{faGradingSubject?.student.full_name}</strong> — {faGradingSubject?.assessment.title}
               <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-semibold">
-                {faGradingSubject?.assessment.type === 'Quiz' ? '❓ Quiz' : faGradingSubject?.assessment.type === 'File' ? '📄 File' : '📝 Exam'}
+                {faGradingSubject?.assessment.type === 'Quiz' ? 'Quiz' : faGradingSubject?.assessment.type === 'File' ? 'File' : 'Exam'}
               </span>
             </DialogDescription>
           </DialogHeader>

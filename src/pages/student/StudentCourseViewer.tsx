@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Loader2, ArrowLeft, ArrowRight, Download,
   Upload, ExternalLink, Star, Send, AlertCircle, PlayCircle,
   Trophy, Clock, MessageSquare, Paperclip, Eye, ShieldCheck,
-  Maximize2, X
+  Maximize2, X, Target
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,6 @@ function handleSmartPaste(
   const html = clipboard.getData('text/html');
   const text = clipboard.getData('text/plain');
 
-  // If there's HTML content (from Word, Google Docs, browser, etc.), convert it
   if (html) {
     e.preventDefault();
     const clean = htmlToPlainText(html);
@@ -37,7 +36,6 @@ function handleSmartPaste(
     return;
   }
 
-  // If there's only plain text, allow default paste behavior
   if (text) {
     e.preventDefault();
     setValue(text);
@@ -45,11 +43,9 @@ function handleSmartPaste(
 }
 
 function htmlToPlainText(html: string): string {
-  // Create a temporary DOM element to parse HTML
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
 
-  // Replace block elements with newlines before extracting text
   const blockElements = tmp.querySelectorAll('div, p, br, h1, h2, h3, h4, h5, h6, li, tr, hr, blockquote, pre');
   blockElements.forEach(el => {
     if (el.tagName === 'BR') {
@@ -61,22 +57,14 @@ function htmlToPlainText(html: string): string {
     }
   });
 
-  // Convert list items to bullet points
   tmp.querySelectorAll('li').forEach(li => {
     const prefix = li.closest('ol') ? `${Array.from(li.parentElement!.children).indexOf(li) + 1}. ` : '• ';
     li.prepend(document.createTextNode(prefix));
   });
 
-  // Extract text and clean up
   let plain = tmp.textContent || tmp.innerText || '';
-
-  // Clean up excessive newlines (3+ → 2)
   plain = plain.replace(/\n{3,}/g, '\n\n');
-
-  // Remove leading/trailing whitespace on each line
   plain = plain.split('\n').map(line => line.trim()).join('\n');
-
-  // Trim final result
   return plain.trim();
 }
 
@@ -139,6 +127,7 @@ interface SurveyResponse {
 }
 
 interface LessonProgress {
+  id?: string;
   lesson_id: string;
   user_id: string;
   completed: boolean;
@@ -171,31 +160,26 @@ function getFileExtension(url: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Google Docs Viewer URL (renders PDFs/docs without native download)
+// HELPER: Google Docs Viewer URL
 // ─────────────────────────────────────────────────────────────────────────────
 function getGoogleDocsViewerUrl(originalUrl: string): string {
   return `https://docs.google.com/gview?url=${encodeURIComponent(originalUrl)}&embedded=true`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Secure iframe wrapper — blocks Google Docs Viewer toolbar buttons
-// (Print, Open as Doc, Pop-out) by overlaying a transparent blocker div
+// HELPER: Secure iframe wrapper
 // ─────────────────────────────────────────────────────────────────────────────
 function SecureViewerFrame({ src, title, height }: {
   src: string; title: string; height: string;
 }) {
   return (
     <div className="relative rounded-xl overflow-hidden border bg-gray-50">
-      {/* The actual viewer */}
       <iframe
         src={src}
         className="w-full border-0"
         style={{ height }}
         title={title}
       />
-      {/* Transparent overlay that blocks Google Docs toolbar buttons.
-          Covers top 65px of the iframe where Print / Open / Pop-out live.
-          The rest of the document remains scrollable beneath. */}
       <div
         className="absolute top-0 left-0 right-0 z-10"
         style={{ height: '65px', background: 'transparent' }}
@@ -206,7 +190,7 @@ function SecureViewerFrame({ src, title, height }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Fullscreen Modal Overlay (view-only, exit only via button or Escape)
+// HELPER: Fullscreen Modal Overlay
 // ─────────────────────────────────────────────────────────────────────────────
 function FullscreenModal({ open, onClose, children, title }: {
   open: boolean; onClose: () => void; children: React.ReactNode; title?: string;
@@ -232,7 +216,6 @@ function FullscreenModal({ open, onClose, children, title }: {
 
   return (
     <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col">
-      {/* Top bar — only View label and Exit */}
       <div className="flex items-center justify-between px-4 py-3 bg-gray-900/80 backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <Eye className="w-4 h-4 text-gray-400" />
@@ -246,7 +229,6 @@ function FullscreenModal({ open, onClose, children, title }: {
           Exit Fullscreen
         </button>
       </div>
-      {/* Content fills remaining space */}
       <div className="flex-1 flex items-center justify-center overflow-hidden p-4">
         {children}
       </div>
@@ -255,15 +237,13 @@ function FullscreenModal({ open, onClose, children, title }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Embedded File Viewer (strict view-only when file_downloadable is false)
-// Students only get: VIEW and FULLSCREEN (view-only, no other options)
+// HELPER: Embedded File Viewer
 // ─────────────────────────────────────────────────────────────────────────────
 function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: boolean }) {
   const fileType = getFileType(url);
   const ext = getFileExtension(url).toUpperCase();
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Block Ctrl+P / Ctrl+S / Cmd+P / Cmd+S globally when a view-only file is rendered
   useEffect(() => {
     if (canDownload) return;
     const block = (e: KeyboardEvent) => {
@@ -276,7 +256,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     return () => document.removeEventListener('keydown', block, true);
   }, [canDownload]);
 
-  // ── Action bar: only VIEW and FULLSCREEN buttons ───────────────────────
   const ActionBar = () => (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
@@ -293,7 +272,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
         )}
       </div>
       <div className="flex items-center gap-2">
-        {/* Fullscreen (always available — view only inside) */}
         <button
           onClick={() => setIsFullscreen(true)}
           className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-200 transition-colors"
@@ -301,7 +279,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
           <Maximize2 className="w-3.5 h-3.5" />
           Fullscreen
         </button>
-        {/* Download button (only when instructor allows) */}
         {canDownload && (
           <a
             href={url}
@@ -316,9 +293,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     </div>
   );
 
-  // ──── PDF ────────────────────────────────────────────────────────────────
-  // ALWAYS use Google Docs Viewer for inline display (prevents auto-download)
-  // canDownload only controls the download button — never the viewer URL
   if (fileType === 'pdf') {
     const viewerSrc = getGoogleDocsViewerUrl(url);
     return (
@@ -335,7 +309,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     );
   }
 
-  // ──── Image ─────────────────────────────────────────────────────────────
   if (fileType === 'image') {
     return (
       <div className="space-y-3">
@@ -372,7 +345,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     );
   }
 
-  // ──── Video ──────────────────────────────────────────────────────────────
   if (fileType === 'video') {
     return (
       <div className="space-y-3">
@@ -406,7 +378,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     );
   }
 
-  // ──── Audio ──────────────────────────────────────────────────────────────
   if (fileType === 'audio') {
     return (
       <div className="space-y-3">
@@ -436,9 +407,6 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
     );
   }
 
-  // ──── Other files (doc, ppt, xls, etc) ─────────────────────────────────
-  // ALWAYS use Google Docs Viewer for inline display (prevents auto-download)
-  // canDownload only controls the download button — never the viewer URL
   const viewerSrc = getGoogleDocsViewerUrl(url);
   return (
     <div className="space-y-3">
@@ -463,6 +431,7 @@ function getLessonIcon(type: string) {
     case 'quiz': return HelpCircle;
     case 'survey': return ClipboardList;
     case 'assignment': return ClipboardList;
+    case 'assessment': return Target;
     case 'url': return LinkIcon;
     case 'header': return LayoutDashboard;
     default: return FileText;
@@ -475,6 +444,7 @@ function getLessonIconColor(type: string) {
     case 'quiz': return 'text-amber-500';
     case 'survey': return 'text-purple-500';
     case 'assignment': return 'text-blue-500';
+    case 'assessment': return 'text-rose-500';
     case 'url': return 'text-teal-500';
     case 'header': return 'text-gray-400';
     default: return 'text-gray-500';
@@ -501,15 +471,18 @@ export default function StudentCourseViewer() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Quiz state
+  // Quiz / Assessment state
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizSubmitting, setQuizSubmitting] = useState(false);
   const [quizScore, setQuizScore] = useState<number | null>(null);
   const [quizPassing, setQuizPassing] = useState(false);
+  const [quizResults, setQuizResults] = useState<{ lesson_id: string; score: number; total_questions: number; passed: boolean }[]>([]);
 
   // Survey state
   const [surveyResponses, setSurveyResponses] = useState<SurveyResponse[]>([]);
   const [surveySubmitted, setSurveySubmitted] = useState(false);
+  const [surveySubmitting, setSurveySubmitting] = useState(false);
 
   // Assignment state
   const [assignText, setAssignText] = useState('');
@@ -523,28 +496,24 @@ export default function StudentCourseViewer() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  // Active lesson object (needed before signed URL hook below)
   const activeLesson = useMemo(() => {
     if (!activeLessonId) return null;
     return allLessons.find(l => l.id === activeLessonId) || null;
   }, [activeLessonId, allLessons]);
 
-  // ── Signed URL hook: if public URL fails, try signed URL for private storage ──
+  // ── Signed URL hook ──────────────────────────────────────────────────────
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   useEffect(() => {
     if (!activeLesson?.file_url) return;
     const url = activeLesson.file_url;
-    // Only attempt signed URL for Supabase storage URLs (not external links)
     const isSupabaseStorage = url.includes('/storage/v1/');
     if (!isSupabaseStorage) return;
-    // Already has a token = already signed
     if (url.includes('token=')) return;
-    // Try to extract the storage path and create a signed URL
     try {
       const urlObj = new URL(url);
       const pathParts = urlObj.pathname.split('/object/public/');
       if (pathParts.length === 2) {
-        const bucketAndPath = pathParts[1]; // e.g. "course-files/assignments/resources/file.pdf"
+        const bucketAndPath = pathParts[1];
         const firstSlash = bucketAndPath.indexOf('/');
         if (firstSlash > 0) {
           const bucket = bucketAndPath.substring(0, firstSlash);
@@ -564,21 +533,17 @@ export default function StudentCourseViewer() {
     }
   }, [activeLesson?.file_url]);
 
-  // Helper: get the best available URL for a file
   const getFileDisplayUrl = (url: string): string => {
     return signedUrls[url] || url;
   };
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  // (activeLesson moved above signed URL hook)
-
   const lessonsByModule = useMemo(() => {
     const map: Record<string, Lesson[]> = {};
     allLessons.forEach(l => {
       if (!map[l.module_id]) map[l.module_id] = [];
       map[l.module_id].push(l);
     });
-    // Sort each module's lessons by order_index
     Object.keys(map).forEach(modId => {
       map[modId].sort((a, b) => a.order_index - b.order_index);
     });
@@ -593,7 +558,6 @@ export default function StudentCourseViewer() {
     );
   }, [progress]);
 
-  // All non-header lessons across all modules (for sequential lock logic)
   const nonHeadersByModule = useMemo(() => {
     const map: Record<string, Lesson[]> = {};
     Object.entries(lessonsByModule).forEach(([modId, lessons]) => {
@@ -602,40 +566,31 @@ export default function StudentCourseViewer() {
     return map;
   }, [lessonsByModule]);
 
-  // ── isLessonLocked: Respects sequential_lessons flag ──────────────────────
+  // ── isLessonLocked ───────────────────────────────────────────────────────
   const isLessonLocked = useCallback((lesson: Lesson): boolean => {
-    // Headers are never locked
     if (lesson.type === 'header') return false;
 
-    // Find the module this lesson belongs to
     const mod = modules.find(m => m.id === lesson.module_id);
     if (!mod) return false;
 
-    // Module-level unlock date always applies regardless of sequential setting
     if (mod.unlock_date && new Date(mod.unlock_date) > new Date()) return true;
 
-    // ✅ KEY FIX: Only enforce sequential order if sequential_lessons is enabled
     if (!mod.sequential_lessons) return false;
 
-    // Sequential mode is ON — find this lesson's index among non-header lessons
     const moduleNonHeaders = nonHeadersByModule[mod.id] || [];
     const idx = moduleNonHeaders.findIndex(l => l.id === lesson.id);
 
-    // First lesson is always unlocked
     if (idx <= 0) return false;
 
-    // Check if the previous lesson is completed
     const previousLesson = moduleNonHeaders[idx - 1];
     return !completedIds.has(previousLesson.id);
   }, [modules, nonHeadersByModule, completedIds]);
 
-  // Helper: check if a module is locked (unlock date not reached)
   const isModuleLocked = useCallback((mod: Module): boolean => {
     if (mod.unlock_date && new Date(mod.unlock_date) > new Date()) return true;
     return false;
   }, []);
 
-  // Overall progress percentage
   const overallProgress = useMemo(() => {
     if (allLessons.length === 0) return 0;
     const completableLessons = allLessons.filter(l => l.type !== 'header');
@@ -644,7 +599,9 @@ export default function StudentCourseViewer() {
     return Math.round((completedCount / completableLessons.length) * 100);
   }, [allLessons, completedIds]);
 
-  // ── Load Data ────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // LOAD DATA
+  // ══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (courseId && user) loadData();
   }, [courseId, user]);
@@ -664,7 +621,7 @@ export default function StudentCourseViewer() {
       if (courseErr) throw courseErr;
       if (courseData) setCourse(courseData);
 
-      // Fetch modules (select('*') includes sequential_lessons automatically)
+      // Fetch modules
       const { data: modsData, error: modsErr } = await supabase
         .from('modules')
         .select('*')
@@ -675,7 +632,6 @@ export default function StudentCourseViewer() {
       if (modsData) {
         setModules(modsData);
 
-        // Fetch all lessons for these modules
         const modIds = modsData.map(m => m.id);
         if (modIds.length > 0) {
           const { data: lessData, error: lessErr } = await supabase
@@ -686,21 +642,14 @@ export default function StudentCourseViewer() {
 
           if (lessErr) throw lessErr;
           if (lessData) {
-            // ── CRITICAL: Resolve file_url for every lesson ──
-            // Admin stores file_url which might be:
-            //   1. A full public URL (https://...) — use as-is
-            //   2. A Supabase storage path (assignments/resources/...) — convert to public URL
-            //   3. A signed URL — use as-is (it has expiry in query params)
-            //   4. Empty/null — nothing to show
+            // Resolve file_url for every lesson
             const resolvedLessons = lessData.map(lesson => {
               if (!lesson.file_url) return lesson;
 
               const url = lesson.file_url;
-              // Already a full URL (http/https) — use as-is
               if (url.startsWith('http://') || url.startsWith('https://')) {
                 return lesson;
               }
-              // Storage path — convert to public URL from 'course-files' bucket
               const { data: urlData } = supabase.storage.from('course-files').getPublicUrl(url);
               if (urlData?.publicUrl) {
                 return { ...lesson, file_url: urlData.publicUrl };
@@ -718,7 +667,6 @@ export default function StudentCourseViewer() {
             if (firstModuleWithLessons) {
               setExpandedModules({ [firstModuleWithLessons.id]: true });
 
-              // Set first non-header lesson as active
               const firstLesson = lessData.find(
                 l => l.module_id === firstModuleWithLessons.id && l.type !== 'header'
               );
@@ -729,8 +677,6 @@ export default function StudentCourseViewer() {
       }
 
       // Fetch progress for this user
-      // NOTE: lesson_progress table does NOT have course_id column
-      // We filter by user_id and then match lesson_ids to this course's lessons client-side
       const { data: progData, error: progErr } = await supabase
         .from('lesson_progress')
         .select('*')
@@ -738,6 +684,18 @@ export default function StudentCourseViewer() {
 
       if (progErr && progErr.code !== '42P01') console.warn('Progress load error:', progErr);
       if (progData) setProgress(progData);
+
+      // Fetch quiz_results for this user to restore "already submitted" state
+      const { data: qrData, error: qrErr } = await supabase
+        .from('quiz_results')
+        .select('lesson_id, score, total_questions, passed')
+        .eq('user_id', user.id);
+
+      if (qrErr) console.warn('Quiz results load error:', qrErr.message);
+      if (qrData && qrData.length > 0) {
+        setQuizResults(qrData);
+        console.log('[StudentCourseViewer] Loaded quiz_results:', qrData.length, 'rows');
+      }
 
     } catch (e: any) {
       console.error('Load error:', e);
@@ -747,7 +705,9 @@ export default function StudentCourseViewer() {
     }
   };
 
-  // ── Mark lesson complete ─────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // MARK LESSON COMPLETE
+  // ══════════════════════════════════════════════════════════════════════════
   const markComplete = async (lessonId: string) => {
     if (!user || !courseId) return;
 
@@ -755,7 +715,6 @@ export default function StudentCourseViewer() {
       const existing = progress.find(p => p.lesson_id === lessonId && p.user_id === user.id);
 
       if (existing) {
-        // Update existing
         const { error } = await supabase
           .from('lesson_progress')
           .update({ completed: true, completed_at: new Date().toISOString() })
@@ -769,7 +728,6 @@ export default function StudentCourseViewer() {
           )
         );
       } else {
-        // Insert new
         const { data, error } = await supabase
           .from('lesson_progress')
           .insert({
@@ -804,19 +762,44 @@ export default function StudentCourseViewer() {
     setActiveLessonId(lesson.id);
     // Reset quiz/survey/assignment state
     setQuizAnswers({});
-    setQuizSubmitted(false);
-    setQuizScore(null);
+    setQuizSubmitting(false);
     setSurveyResponses([]);
     setSurveySubmitted(false);
+    setSurveySubmitting(false);
     setAssignText('');
     setAssignUrl('');
     setAssignFile(null);
+    setAssignUploading(false);
     setAssignSubmitted(false);
     setAssignExistingSubmission(null);
-  }, [isLessonLocked, toast]);
 
-  // ── Quiz submission ──────────────────────────────────────────────────────
-  const submitQuiz = useCallback(() => {
+    // Check if this quiz/assessment was already submitted — restore state
+    if (lesson.type === 'quiz' || lesson.type === 'assessment') {
+      const existing = quizResults.find(qr => qr.lesson_id === lesson.id);
+      if (existing) {
+        const pct = existing.total_questions > 0
+          ? Math.round((existing.score / existing.total_questions) * 100)
+          : 0;
+        setQuizSubmitted(true);
+        setQuizScore(pct);
+        setQuizPassing(existing.passed);
+        console.log(`[StudentCourseViewer] Restored quiz state for ${lesson.title}: ${pct}% (${existing.score}/${existing.total_questions})`);
+      } else {
+        setQuizSubmitted(false);
+        setQuizScore(null);
+        setQuizPassing(false);
+      }
+    } else {
+      setQuizSubmitted(false);
+      setQuizScore(null);
+      setQuizPassing(false);
+    }
+  }, [isLessonLocked, toast, quizResults]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // QUIZ / ASSESSMENT SUBMISSION — FIX #1: async/await with proper error toast
+  // ══════════════════════════════════════════════════════════════════════════
+  const submitQuiz = useCallback(async () => {
     if (!activeLesson?.quiz_data) return;
 
     const questions = activeLesson.quiz_data.filter(q => q.type === 'multiple_choice');
@@ -830,54 +813,184 @@ export default function StudentCourseViewer() {
     const score = Math.round((correctCount / totalQ) * 100);
     const passing = score >= 50;
 
-    setQuizScore(score);
-    setQuizPassing(passing);
-    setQuizSubmitted(true);
+    // FIX: Set submitting state — show loading, prevent double-click
+    setQuizSubmitting(true);
 
-    // Save quiz result
-    if (user && courseId) {
-      supabase
-        .from('quiz_results')
-        .insert({
-          user_id: user.id,
-          lesson_id: activeLesson.id,
-          course_id: courseId,
-          score: correctCount,
-          total_questions: totalQ,
-          passed: passing,
-        })
-        .then(({ error }) => {
-          if (error) console.warn('Quiz result save error:', error);
-          // Mark complete regardless of pass/fail
-          markComplete(activeLesson.id);
-        });
+    try {
+      if (!user || !courseId) {
+        throw new Error('You must be logged in to submit.');
+      }
+
+      // ── Determine which table to save to ──
+      const isAssessment = activeLesson.type === 'assessment';
+
+      if (isAssessment) {
+        // Assessments go to assessment_submissions table
+        const { error: asmtErr } = await supabase
+          .from('assessment_submissions')
+          .upsert({
+            user_id: user.id,
+            assessment_id: activeLesson.id,
+            submission_type: 'quiz',
+            content: null,
+            file_url: null,
+            score: correctCount,
+            status: 'pending',
+            submitted_at: new Date().toISOString(),
+          }, { onConflict: 'user_id,assessment_id' });
+
+        if (asmtErr) {
+          console.error('[assessment_submissions] Save error:', asmtErr);
+          throw new Error(`Failed to save: ${asmtErr.message}`);
+        }
+      } else {
+        // Quizzes go to quiz_results table
+        const { error: quizErr } = await supabase
+          .from('quiz_results')
+          .upsert({
+            user_id: user.id,
+            lesson_id: activeLesson.id,
+            course_id: courseId,
+            score: correctCount,
+            total_questions: totalQ,
+            passed: passing,
+          }, { onConflict: 'user_id,lesson_id' });
+
+        if (quizErr) {
+          console.error('[quiz_results] Save error:', quizErr);
+          throw new Error(`Failed to save: ${quizErr.message}`);
+        }
+      }
+
+      console.log(`[${isAssessment ? 'assessment_submissions' : 'quiz_results'}] Saved successfully for lesson ${activeLesson.id}`);
+
+      // FIX: Only mark UI as submitted AFTER successful DB save
+      setQuizScore(score);
+      setQuizPassing(passing);
+      setQuizSubmitted(true);
+
+      // Add to quizResults so switching lessons and coming back remembers
+      setQuizResults(prev => [...prev, {
+        lesson_id: activeLesson.id,
+        score: correctCount,
+        total_questions: totalQ,
+        passed: passing,
+      }]);
+
+      // Mark complete regardless of pass/fail
+      markComplete(activeLesson.id);
+
+    } catch (e: any) {
+      console.error('Quiz/Assessment submit error:', e);
+      toast({
+        title: `Error submitting ${activeLesson.type}`,
+        description: e.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setQuizSubmitting(false);
     }
-  }, [activeLesson, quizAnswers, user, courseId, markComplete]);
+  }, [activeLesson, quizAnswers, user, courseId, markComplete, toast]);
 
-  // ── Survey submission ────────────────────────────────────────────────────
-  const submitSurvey = useCallback(() => {
+  // ══════════════════════════════════════════════════════════════════════════
+  // SURVEY SUBMISSION — FIX #2: async/await with proper error toast
+  // ══════════════════════════════════════════════════════════════════════════
+  const submitSurvey = useCallback(async () => {
     if (!activeLesson?.quiz_data || surveyResponses.length === 0) return;
 
-    setSurveySubmitted(true);
+    setSurveySubmitting(true);
 
-    // Save survey (reuse lesson_progress or a survey table)
-    if (user && courseId) {
-      supabase
+    try {
+      if (!user || !courseId) {
+        throw new Error('You must be logged in to submit.');
+      }
+
+      // Extract overall rating from rating-type questions
+      const ratingQuestion = surveyResponses.find(r => r.type === 'rating');
+      const overallRating = ratingQuestion?.rating || null;
+
+      // Format answers to match what AdminSurveyAnalytics expects
+      const formattedAnswers = surveyResponses.map(r => {
+        if (r.type === 'rating') {
+          const labels = ['Terrible', 'Poor', 'Average', 'Good', 'Excellent'];
+          return {
+            question: r.question,
+            type: 'rating',
+            answer: r.rating || 0,
+            label: labels[(r.rating || 0) - 1] || '',
+          };
+        }
+        if (r.type === 'multiple_choice') {
+          return {
+            question: r.question,
+            type: 'multiple_choice',
+            answer: r.answer,
+            optionText: r.answer,
+          };
+        }
+        return {
+          question: r.question,
+          type: 'text',
+          answer: r.answer || '',
+        };
+      });
+
+      // Try upsert with 'answers' column
+      let error: any = null;
+      const { error: upsertErr } = await supabase
         .from('survey_responses')
-        .insert({
+        .upsert({
           user_id: user.id,
           lesson_id: activeLesson.id,
           course_id: courseId,
-          responses: surveyResponses,
-        })
-        .then(({ error }) => {
-          if (error) console.warn('Survey save error:', error);
-          markComplete(activeLesson.id);
-        });
-    }
-  }, [activeLesson, surveyResponses, user, courseId, markComplete]);
+          rating: overallRating,
+          answers: formattedAnswers,
+        }, { onConflict: 'user_id,lesson_id' });
 
-  // ── Assignment submission ────────────────────────────────────────────────
+      error = upsertErr;
+
+      // FIX: If 'answers' column doesn't exist, try 'responses' column as fallback
+      if (error && error.message?.includes('column "answers" does not exist')) {
+        console.warn('[Survey] "answers" column not found, trying "responses" column...');
+        const { error: fallbackErr } = await supabase
+          .from('survey_responses')
+          .upsert({
+            user_id: user.id,
+            lesson_id: activeLesson.id,
+            course_id: courseId,
+            rating: overallRating,
+            responses: formattedAnswers,
+          }, { onConflict: 'user_id,lesson_id' });
+
+        error = fallbackErr;
+      }
+
+      if (error) {
+        console.error('[Survey] Save error:', error);
+        throw new Error(`Failed to save survey: ${error.message}`);
+      }
+
+      console.log('[Survey] Saved successfully for lesson', activeLesson.id);
+
+      // FIX: Only mark UI as submitted AFTER successful DB save
+      setSurveySubmitted(true);
+      markComplete(activeLesson.id);
+
+    } catch (e: any) {
+      console.error('Survey submit error:', e);
+      toast({
+        title: 'Error submitting survey',
+        description: e.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSurveySubmitting(false);
+    }
+  }, [activeLesson, surveyResponses, user, courseId, markComplete, toast]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ASSIGNMENT SUBMISSION — FIX #3: include file_name, better error logging
+  // ══════════════════════════════════════════════════════════════════════════
   const submitAssignment = useCallback(async () => {
     if (!activeLesson || !user || !courseId) return;
     if (!assignText && !assignUrl && !assignFile) {
@@ -889,42 +1002,107 @@ export default function StudentCourseViewer() {
 
     try {
       let fileUrl: string | null = null;
+      let fileName: string | null = null;
 
-      // Upload file if provided
+      // Upload file if provided — accepts ANY file type
       if (assignFile) {
-        const path = `assignments/${user.id}/${Date.now()}_${assignFile.name}`;
+        const fileExt = assignFile.name.split('.').pop() || 'file';
+        const timestamp = Date.now();
+        const sanitized = assignFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `assignments/${user.id}/${timestamp}_${sanitized}`;
+
+        console.log('[Assignment] Uploading file:', {
+          originalName: assignFile.name,
+          sanitized,
+          size: assignFile.size,
+          type: assignFile.type,
+          path,
+        });
+
         const { error: uploadErr } = await supabase.storage
           .from('course-files')
-          .upload(path, assignFile);
-        if (uploadErr) throw uploadErr;
+          .upload(path, assignFile, {
+            cacheControl: '3600',
+            upsert: false,
+          });
+
+        if (uploadErr) {
+          console.error('[Assignment] Storage upload error:', uploadErr);
+          throw new Error(`File upload failed: ${uploadErr.message}`);
+        }
 
         const { data } = supabase.storage.from('course-files').getPublicUrl(path);
         fileUrl = data.publicUrl;
+        fileName = assignFile.name;
+
+        console.log('[Assignment] File uploaded successfully:', fileUrl);
       }
 
       const submissionType = assignFile ? 'file' : assignUrl ? 'url' : 'text';
 
+      // Build the insert payload
+      const payload: Record<string, any> = {
+        user_id: user.id,
+        lesson_id: activeLesson.id,
+        course_id: courseId,
+        content: assignText || null,
+        file_url: fileUrl || (assignUrl || null),
+        file_name: fileName || null,
+        submission_type: submissionType,
+        status: 'submitted',
+        submitted_at: new Date().toISOString(),
+      };
+
+      console.log('[Assignment] Inserting submission:', {
+        lesson_id: payload.lesson_id,
+        course_id: payload.course_id,
+        submission_type: payload.submission_type,
+        has_content: !!payload.content,
+        has_file_url: !!payload.file_url,
+        file_name: payload.file_name,
+      });
+
       const { error } = await supabase
         .from('assignment_submissions')
-        .insert({
-          user_id: user.id,
-          lesson_id: activeLesson.id,
-          course_id: courseId,
-          content: assignText || null,
-          file_url: fileUrl || (assignUrl || null),
-          submission_type: submissionType,
-          status: 'submitted',
-          submitted_at: new Date().toISOString(),
-        });
+        .insert(payload);
 
-      if (error) throw error;
+      if (error) {
+        console.error('[Assignment] DB insert error:', error);
+        // If 'file_name' column doesn't exist, retry without it
+        if (error.message?.includes('file_name') && (error.message?.includes('does not exist') || error.message?.includes('Could not find'))) {
+          console.warn('[Assignment] file_name column missing, retrying without it...');
+          const { error: retryErr } = await supabase
+            .from('assignment_submissions')
+            .insert({
+              user_id: user.id,
+              lesson_id: activeLesson.id,
+              course_id: courseId,
+              content: assignText || null,
+              file_url: fileUrl || (assignUrl || null),
+              submission_type: submissionType,
+              status: 'submitted',
+              submitted_at: new Date().toISOString(),
+            });
+          if (retryErr) throw retryErr;
+        } else {
+          throw new Error(`Database error: ${error.message}`);
+        }
+      }
 
+      console.log('[Assignment] Submission saved successfully!');
+
+      // FIX: Only mark UI as submitted AFTER successful DB save
       setAssignSubmitted(true);
       toast({ title: 'Assignment submitted successfully! ✓' });
       markComplete(activeLesson.id);
+
     } catch (e: any) {
-      console.error('Assignment submit error:', e);
-      toast({ title: 'Error submitting assignment', description: e.message, variant: 'destructive' });
+      console.error('[Assignment] Submit error:', e);
+      toast({
+        title: 'Error submitting assignment',
+        description: e.message || 'Please try again.',
+        variant: 'destructive',
+      });
     } finally {
       setAssignUploading(false);
     }
@@ -1002,7 +1180,9 @@ export default function StudentCourseViewer() {
     );
   }
 
-  // ── Render: Content Area for active lesson ───────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // RENDER: Lesson Content Router
+  // ══════════════════════════════════════════════════════════════════════════
   const renderLessonContent = () => {
     if (!activeLesson) {
       return (
@@ -1015,22 +1195,16 @@ export default function StudentCourseViewer() {
     }
 
     switch (activeLesson.type) {
-      case 'header':
-        return renderHeaderContent();
-      case 'text':
-        return renderTextContent();
-      case 'video':
-        return renderVideoContent();
-      case 'quiz':
-        return renderQuizContent();
-      case 'survey':
-        return renderSurveyContent();
-      case 'assignment':
-        return renderAssignmentContent();
-      case 'url':
-        return renderUrlContent();
-      default:
-        return renderTextContent();
+      case 'header':     return renderHeaderContent();
+      case 'text':       return renderTextContent();
+      case 'video':      return renderVideoContent();
+      case 'quiz':       return renderQuizContent();
+      case 'survey':     return renderSurveyContent();
+      case 'assignment': return renderAssignmentContent();
+      // FIX #4: assessment type now renders properly (same as quiz but with assessment branding)
+      case 'assessment': return renderAssessmentContent();
+      case 'url':        return renderUrlContent();
+      default:           return renderTextContent();
     }
   };
 
@@ -1048,13 +1222,11 @@ export default function StudentCourseViewer() {
           className="prose prose-sm max-w-none text-gray-700 leading-relaxed"
           dangerouslySetInnerHTML={{ __html: activeLesson?.content || '' }}
         />
-        {/* ✅ FIXED: File is ALWAYS shown inline (view or view+download) */}
         {hasFile && (
           <div className="mt-6">
             <EmbeddedFileViewer url={fileUrl!} canDownload={canDownload} />
           </div>
         )}
-        {/* Mark complete button */}
         {!isComplete && (
           <div className="pt-4 border-t">
             <Button onClick={() => markComplete(activeLesson!.id)} className="gap-2">
@@ -1073,7 +1245,7 @@ export default function StudentCourseViewer() {
     );
   };
 
-  // ── Header Content (section divider) ─────────────────────────────────────
+  // ── Header Content ───────────────────────────────────────────────────────
   const renderHeaderContent = () => (
     <div className="text-center py-16">
       <LayoutDashboard className="w-12 h-12 mx-auto mb-4 text-indigo-300" />
@@ -1091,7 +1263,6 @@ export default function StudentCourseViewer() {
     const videoUrl = rawVideoUrl ? getFileDisplayUrl(rawVideoUrl) : '';
     const canDownload = activeLesson?.file_downloadable !== false;
 
-    // Check if YouTube URL
     const youtubeMatch = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
     const vimeoMatch = videoUrl.match(/vimeo\.com\/(\d+)/);
 
@@ -1155,7 +1326,6 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* Video description */}
         {activeLesson?.content && !activeLesson?.file_url && (
           <div
             className="prose prose-sm max-w-none text-gray-600"
@@ -1181,7 +1351,9 @@ export default function StudentCourseViewer() {
     );
   };
 
-  // ── Quiz Content ─────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // QUIZ CONTENT
+  // ══════════════════════════════════════════════════════════════════════════
   const renderQuizContent = () => {
     const questions = activeLesson?.quiz_data?.filter(q => q.type === 'multiple_choice') || [];
     const isComplete = completedIds.has(activeLesson!.id);
@@ -1232,7 +1404,6 @@ export default function StudentCourseViewer() {
                     const isSelected = quizAnswers[qIdx] === oIdx;
                     let borderClass = 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50';
                     if (isSelected) borderClass = 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-200';
-                    // After submission: show correct/wrong
                     if (quizSubmitted) {
                       if (oIdx === q.correct) borderClass = 'border-emerald-500 bg-emerald-50';
                       else if (isSelected && oIdx !== q.correct) borderClass = 'border-red-500 bg-red-50';
@@ -1242,7 +1413,7 @@ export default function StudentCourseViewer() {
                         key={oIdx}
                         className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition-all ${borderClass} ${quizSubmitted ? 'cursor-default' : 'cursor-pointer'}`}
                         onClick={() => !quizSubmitted && setQuizAnswers(prev => ({ ...prev, [qIdx]: oIdx }))}
-                        disabled={quizSubmitted}
+                        disabled={quizSubmitted || quizSubmitting}
                       >
                         <span className="inline-flex items-center gap-2">
                           <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs ${isSelected ? 'border-indigo-500 bg-indigo-500 text-white' : 'border-gray-300'}`}>
@@ -1263,11 +1434,15 @@ export default function StudentCourseViewer() {
           <div className="pt-4 border-t">
             <Button
               onClick={submitQuiz}
-              disabled={Object.keys(quizAnswers).length < questions.length}
+              disabled={Object.keys(quizAnswers).length < questions.length || quizSubmitting}
               className="gap-2"
             >
-              <Send className="w-4 h-4" />
-              Submit Quiz
+              {quizSubmitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              {quizSubmitting ? 'Saving...' : 'Submit Quiz'}
             </Button>
             {Object.keys(quizAnswers).length < questions.length && (
               <p className="text-xs text-gray-400 mt-2">
@@ -1287,7 +1462,141 @@ export default function StudentCourseViewer() {
     );
   };
 
-  // ── Survey Content ───────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // ASSESSMENT CONTENT — FIX #4: New dedicated render for 'assessment' type
+  // Uses same quiz_data structure but with assessment branding and saves to
+  // assessment_submissions table instead of quiz_results
+  // ══════════════════════════════════════════════════════════════════════════
+  const renderAssessmentContent = () => {
+    const questions = activeLesson?.quiz_data?.filter(q => q.type === 'multiple_choice') || [];
+    const isComplete = completedIds.has(activeLesson!.id);
+
+    if (questions.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <Target className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+          <h3 className="text-lg font-semibold text-gray-500">No assessment questions</h3>
+          <p className="text-sm text-gray-400">This assessment hasn't been set up yet.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        {/* Assessment header banner */}
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl">
+          <div className="flex items-center gap-2 text-rose-800">
+            <Target className="w-5 h-5" />
+            <span className="font-semibold">Assessment: {questions.length} question{questions.length > 1 ? 's' : ''}</span>
+          </div>
+          <p className="text-sm text-rose-700 mt-1">Select the correct answer for each question. You need 50% to pass.</p>
+        </div>
+
+        {/* Assessment description if present */}
+        {activeLesson?.content && (
+          <div
+            className="prose prose-sm max-w-none text-gray-600"
+            dangerouslySetInnerHTML={{ __html: activeLesson.content }}
+          />
+        )}
+
+        {/* Assessment file if present */}
+        {activeLesson?.file_url && (
+          <div>
+            <EmbeddedFileViewer
+              url={getFileDisplayUrl(activeLesson.file_url)}
+              canDownload={activeLesson.file_downloadable !== false}
+            />
+          </div>
+        )}
+
+        {quizSubmitted && quizScore !== null ? (
+          <div className={`p-6 rounded-xl text-center ${quizPassing ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+            <Trophy className={`w-12 h-12 mx-auto mb-3 ${quizPassing ? 'text-emerald-500' : 'text-red-400'}`} />
+            <h3 className={`text-xl font-bold ${quizPassing ? 'text-emerald-800' : 'text-red-800'}`}>
+              {quizPassing ? 'Assessment Passed!' : 'Assessment Not Passed'}
+            </h3>
+            <p className={`text-3xl font-bold mt-2 ${quizPassing ? 'text-emerald-600' : 'text-red-500'}`}>
+              {quizScore}%
+            </p>
+            <p className="text-sm text-gray-500 mt-1">
+              You got {questions.filter((q, i) => quizAnswers[i] === q.correct).length} out of {questions.length} correct
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {questions.map((q, qIdx) => (
+              <div key={qIdx} className="p-4 border rounded-xl">
+                <p className="font-semibold text-sm text-gray-800 mb-3">
+                  <span className="text-rose-500 mr-2">Q{qIdx + 1}.</span>
+                  {q.q}
+                </p>
+                <div className="space-y-2">
+                  {q.a.map((option, oIdx) => {
+                    const isSelected = quizAnswers[qIdx] === oIdx;
+                    let borderClass = 'border-gray-200 hover:border-rose-300 hover:bg-rose-50';
+                    if (isSelected) borderClass = 'border-rose-500 bg-rose-50 ring-1 ring-rose-200';
+                    if (quizSubmitted) {
+                      if (oIdx === q.correct) borderClass = 'border-emerald-500 bg-emerald-50';
+                      else if (isSelected && oIdx !== q.correct) borderClass = 'border-red-500 bg-red-50';
+                    }
+                    return (
+                      <button
+                        key={oIdx}
+                        className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition-all ${borderClass} ${quizSubmitted ? 'cursor-default' : 'cursor-pointer'}`}
+                        onClick={() => !quizSubmitted && setQuizAnswers(prev => ({ ...prev, [qIdx]: oIdx }))}
+                        disabled={quizSubmitted || quizSubmitting}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs ${isSelected ? 'border-rose-500 bg-rose-500 text-white' : 'border-gray-300'}`}>
+                            {isSelected && '✓'}
+                          </span>
+                          {option}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!quizSubmitted && (
+          <div className="pt-4 border-t">
+            <Button
+              onClick={submitQuiz}
+              disabled={Object.keys(quizAnswers).length < questions.length || quizSubmitting}
+              className="gap-2 bg-rose-600 hover:bg-rose-700"
+            >
+              {quizSubmitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              {quizSubmitting ? 'Saving...' : 'Submit Assessment'}
+            </Button>
+            {Object.keys(quizAnswers).length < questions.length && (
+              <p className="text-xs text-gray-400 mt-2">
+                Answer all questions before submitting ({Object.keys(quizAnswers).length}/{questions.length})
+              </p>
+            )}
+          </div>
+        )}
+
+        {isComplete && (
+          <div className="pt-2 flex items-center gap-2 text-emerald-600 text-sm font-medium">
+            <CheckCircle2 className="w-4 h-4" />
+            Assessment completed
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SURVEY CONTENT
+  // ══════════════════════════════════════════════════════════════════════════
   const renderSurveyContent = () => {
     const questions = activeLesson?.quiz_data || [];
     const isComplete = completedIds.has(activeLesson!.id);
@@ -1345,6 +1654,7 @@ export default function StudentCourseViewer() {
                         key={star}
                         onClick={() => updateResponse(qIdx, `${star} star${star > 1 ? 's' : ''}`, 'rating', star)}
                         className="hover:scale-110 transition-transform"
+                        disabled={surveySubmitting}
                       >
                         <Star
                           className={`w-8 h-8 ${
@@ -1367,7 +1677,8 @@ export default function StudentCourseViewer() {
                             ? 'border-purple-500 bg-purple-50'
                             : 'border-gray-200 hover:border-purple-300 hover:bg-purple-50'
                         }`}
-                        onClick={() => updateResponse(qIdx, option, 'multiple_choice')}
+                        onClick={() => !surveySubmitting && updateResponse(qIdx, option, 'multiple_choice')}
+                        disabled={surveySubmitting}
                       >
                         {option}
                       </button>
@@ -1395,6 +1706,7 @@ export default function StudentCourseViewer() {
                         updateResponse(qIdx, text, 'text');
                       }
                     }}
+                    disabled={surveySubmitting}
                   />
                 )}
               </div>
@@ -1404,9 +1716,17 @@ export default function StudentCourseViewer() {
 
         {!surveySubmitted && (
           <div className="pt-4 border-t">
-            <Button onClick={submitSurvey} className="gap-2">
-              <Send className="w-4 h-4" />
-              Submit Survey
+            <Button
+              onClick={submitSurvey}
+              disabled={surveySubmitting}
+              className="gap-2"
+            >
+              {surveySubmitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              {surveySubmitting ? 'Saving...' : 'Submit Survey'}
             </Button>
           </div>
         )}
@@ -1421,7 +1741,9 @@ export default function StudentCourseViewer() {
     );
   };
 
-  // ── Assignment Content ───────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // ASSIGNMENT CONTENT
+  // ══════════════════════════════════════════════════════════════════════════
   const renderAssignmentContent = () => {
     const config = activeLesson?.assignment_config;
     const isComplete = completedIds.has(activeLesson!.id);
@@ -1429,7 +1751,6 @@ export default function StudentCourseViewer() {
     const assignmentFileUrl = rawFileUrl ? getFileDisplayUrl(rawFileUrl) : null;
     const canDownloadFile = activeLesson?.file_downloadable !== false;
 
-    // Debug: log what we have for this assignment
     console.log('[StudentViewer] Assignment data:', {
       lessonId: activeLesson?.id,
       title: activeLesson?.title,
@@ -1447,8 +1768,7 @@ export default function StudentCourseViewer() {
 
     return (
       <div className="space-y-6">
-        {/* ─── SECTION 1: Assignment Brief File (MOST PROMINENT) ─── */}
-        {/* Always show if file_url exists on this lesson — this is the uploaded brief */}
+        {/* SECTION 1: Assignment Brief File */}
         {assignmentFileUrl && (
           <div className="rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 bg-blue-100/60 border-b border-blue-200">
@@ -1492,7 +1812,7 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* ─── SECTION 2: Assignment Instructions (text or URL) ─── */}
+        {/* SECTION 2: Assignment Instructions */}
         {config?.instructions && config.instruction_type !== 'file' && (
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-blue-800">
@@ -1519,7 +1839,7 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* ─── SECTION 3: External resource URL (if different from file) ─── */}
+        {/* SECTION 3: External resource URL */}
         {config?.instruction_type === 'url' && config.resource_url && (
           <a
             href={config.resource_url}
@@ -1537,7 +1857,7 @@ export default function StudentCourseViewer() {
           </a>
         )}
 
-        {/* ─── SECTION 4: Due date ─── */}
+        {/* SECTION 4: Due date */}
         {config?.due_note && (
           <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
             <Clock className="w-4 h-4 flex-shrink-0" />
@@ -1545,7 +1865,7 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* ─── SECTION 5: Additional lesson content ─── */}
+        {/* SECTION 5: Additional lesson content */}
         {activeLesson?.content && activeLesson.type === 'assignment' && (
           <div
             className="prose prose-sm max-w-none text-gray-600"
@@ -1553,7 +1873,7 @@ export default function StudentCourseViewer() {
           />
         )}
 
-        {/* ─── SECTION 6: Accepted submission methods ─── */}
+        {/* SECTION 6: Accepted submission methods */}
         {config && (
           <div className="flex flex-wrap gap-2">
             {config.allow_text !== false && (
@@ -1568,13 +1888,13 @@ export default function StudentCourseViewer() {
             )}
             {config.allow_file !== false && (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-lg text-[10px] text-gray-600 font-medium">
-                <Upload className="w-3 h-3" /> File Upload
+                <Upload className="w-3 h-3" /> File Upload (any type)
               </span>
             )}
           </div>
         )}
 
-        {/* ─── SECTION 7: Existing submission info ─── */}
+        {/* SECTION 7: Existing submission info */}
         {assignExistingSubmission && (
           <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
             <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
@@ -1583,10 +1903,19 @@ export default function StudentCourseViewer() {
             </div>
             <p className="text-xs text-emerald-600">
               Submitted on {new Date(assignExistingSubmission.submitted_at).toLocaleString()}
-              {assignExistingSubmission.status === 'graded' && (
-                <> — Grade: {assignExistingSubmission.score !== null ? `${assignExistingSubmission.score}/100` : 'Pending'}</>
+              {assignExistingSubmission.file_name && (
+                <> — File: {assignExistingSubmission.file_name}</>
               )}
             </p>
+            {assignExistingSubmission.status === 'graded' && (
+              <p className="text-xs text-emerald-600 mt-1">
+                Grade: {assignExistingSubmission.score !== null && assignExistingSubmission.total_marks !== null
+                  ? `${assignExistingSubmission.score}/${assignExistingSubmission.total_marks}`
+                  : assignExistingSubmission.score !== null
+                    ? `${assignExistingSubmission.score}/100`
+                    : 'Pending'}
+              </p>
+            )}
             {assignExistingSubmission.feedback && (
               <div className="mt-2 p-3 bg-white border border-emerald-100 rounded-lg">
                 <p className="text-xs text-gray-500 font-semibold mb-1">Feedback:</p>
@@ -1596,7 +1925,7 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* ─── SECTION 8: Submission form ─── */}
+        {/* SECTION 8: Submission form */}
         {!assignSubmitted && (
           <div className="space-y-4 pt-4 border-t">
             <p className="font-semibold text-sm text-gray-800">Submit Your Work</p>
@@ -1610,6 +1939,7 @@ export default function StudentCourseViewer() {
                   value={assignText}
                   onChange={e => setAssignText(e.target.value)}
                   onPaste={e => handleSmartPaste(e, setAssignText)}
+                  disabled={assignUploading}
                 />
               </div>
             )}
@@ -1621,16 +1951,24 @@ export default function StudentCourseViewer() {
                   placeholder="https://..."
                   value={assignUrl}
                   onChange={e => setAssignUrl(e.target.value)}
+                  disabled={assignUploading}
                 />
               </div>
             )}
 
             {config?.allow_file !== false && (
               <div>
-                <label className="text-xs font-medium text-gray-600 block mb-1">Upload File</label>
+                <label className="text-xs font-medium text-gray-600 block mb-1">
+                  Upload File
+                  <span className="text-gray-400 font-normal ml-1">(PDF, Excel, PowerPoint, images, or any other format)</span>
+                </label>
                 <div
-                  className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-all"
-                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+                    assignUploading
+                      ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed'
+                      : 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30'
+                  }`}
+                  onClick={() => !assignUploading && fileInputRef.current?.click()}
                 >
                   <input
                     ref={fileInputRef}
@@ -1640,23 +1978,28 @@ export default function StudentCourseViewer() {
                       const file = e.target.files?.[0];
                       if (file) setAssignFile(file);
                     }}
+                    disabled={assignUploading}
                   />
                   {assignFile ? (
                     <div className="flex items-center justify-center gap-2 text-indigo-600">
                       <Paperclip className="w-4 h-4" />
                       <span className="text-sm font-medium">{assignFile.name}</span>
+                      <span className="text-xs text-gray-400">
+                        ({(assignFile.size / 1024).toFixed(1)} KB)
+                      </span>
                     </div>
                   ) : (
                     <div>
                       <Upload className="w-8 h-8 mx-auto text-gray-300 mb-2" />
                       <p className="text-sm text-gray-400">Click to upload a file</p>
+                      <p className="text-[10px] text-gray-300 mt-1">Any file type accepted</p>
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            <Button onClick={submitAssignment} disabled={assignUploading} className="gap-2">
+            <Button onClick={submitAssignment} disabled={assignUploading || (!assignText && !assignUrl && !assignFile)} className="gap-2">
               {assignUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
@@ -1725,7 +2068,9 @@ export default function StudentCourseViewer() {
     );
   };
 
-  // ── Sidebar ──────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // SIDEBAR
+  // ══════════════════════════════════════════════════════════════════════════
   const renderSidebar = () => (
     <div className={`flex flex-col h-full bg-gray-50 border-r ${sidebarOpen ? 'w-80' : 'w-0'} transition-all overflow-hidden`}>
       {/* Course header */}
@@ -1736,7 +2081,6 @@ export default function StudentCourseViewer() {
           </Button>
           <h2 className="font-bold text-sm text-gray-800 truncate">{course?.title}</h2>
         </div>
-        {/* Progress bar */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-500">Course Progress</span>
@@ -1759,7 +2103,6 @@ export default function StudentCourseViewer() {
 
           return (
             <div key={mod.id} className={`border-b ${isSequential ? 'border-l-2 border-l-indigo-300' : ''}`}>
-              {/* Module header */}
               <button
                 className={`w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-100 transition-colors ${isLocked ? 'opacity-50' : ''}`}
                 onClick={() => !isLocked && setExpandedModules(prev => ({ ...prev, [mod.id]: !prev[mod.id] }))}
@@ -1799,7 +2142,6 @@ export default function StudentCourseViewer() {
                 )}
               </button>
 
-              {/* Sequential mode banner */}
               {isExpanded && isSequential && !isLocked && (
                 <div className="mx-4 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-[10px] text-indigo-600">
                   <LockIcon className="w-3 h-3" />
@@ -1807,7 +2149,6 @@ export default function StudentCourseViewer() {
                 </div>
               )}
 
-              {/* Lessons list */}
               {isExpanded && !isLocked && (
                 <div className="pb-2">
                   {moduleLessons.map(lesson => {
@@ -1842,7 +2183,6 @@ export default function StudentCourseViewer() {
                         disabled={locked}
                         style={{ marginLeft: `${(lesson.indent_level || 0) * 16}px` }}
                       >
-                        {/* Status icon */}
                         {isComplete ? (
                           <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                         ) : locked ? (
@@ -1851,12 +2191,10 @@ export default function StudentCourseViewer() {
                           <Icon className={`w-4 h-4 shrink-0 ${iconColor}`} />
                         )}
 
-                        {/* Title */}
                         <span className={`truncate flex-1 ${isActive ? 'font-semibold' : ''}`}>
                           {lesson.title}
                         </span>
 
-                        {/* Indicators */}
                         {lesson.file_url && !lesson.file_downloadable && (
                           <Paperclip className="w-3 h-3 text-gray-300 shrink-0" />
                         )}
@@ -1872,7 +2210,9 @@ export default function StudentCourseViewer() {
     </div>
   );
 
-  // ── Main render ──────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // MAIN RENDER
+  // ══════════════════════════════════════════════════════════════════════════
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* Sidebar */}
@@ -1910,7 +2250,6 @@ export default function StudentCourseViewer() {
               </div>
             </div>
 
-            {/* Navigation buttons */}
             <div className="flex items-center gap-2 shrink-0">
               <Button variant="outline" size="sm" onClick={goToPrevLesson} className="gap-1">
                 <ArrowLeft className="w-3.5 h-3.5" />

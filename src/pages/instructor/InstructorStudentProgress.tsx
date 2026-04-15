@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,7 +19,8 @@ interface Lesson   { id: string; title: string; type: string; module_id: string;
 interface Progress { lesson_id: string; completed: boolean; score?: number | null; completed_at?: string | null; time_spent?: number | null; }
 interface Schedule { id: string; days: string[]; time: string; meeting_url: string; }
 interface SurveyResp { lesson_id: string; rating: number | null; answers: any[]; created_at: string; }
-interface AssignSub  { lesson_id: string; score: number | null; status: string; submitted_at: string; feedback: string | null; submission_type: string; }
+interface AssignSub  { id?: string; lesson_id: string | null; assignment_id?: string; score: number | null; total_marks?: number; status: string; submitted_at: string; feedback: string | null; submission_type: string; }
+interface QuizResultRow { id: string; user_id: string; lesson_id: string; course_id: string; score: number; total_questions: number; passed: boolean; created_at: string; }
 interface StudentOption {
   id: string; full_name: string; email: string; cohort_name: string;
   course: string; cohort_id: string; course_id: string; progress: number;
@@ -39,7 +41,7 @@ const LESSON_ICONS: Record<string, React.ElementType> = {
   final_exam: Trophy,
 };
 
-// ── Grade helpers (same as StudentGradebook) ──
+// -- Grade helpers (same as StudentGradebook) --
 function getLetterGrade(score: number): string {
   if (score >= 70) return 'A';
   if (score >= 60) return 'B';
@@ -93,6 +95,9 @@ export default function InstructorStudentProgress() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [surveys, setSurveys] = useState<SurveyResp[]>([]);
   const [assignments, setAssignments] = useState<AssignSub[]>([]);
+  const [quizResults, setQuizResults] = useState<QuizResultRow[]>([]);
+  // Enriched map: lesson_id -> assignment submission data (handles both lesson_id and assignment_id linking)
+  const [assignScoreByLesson, setAssignScoreByLesson] = useState<Record<string, { score: number | null; status: string; submitted_at: string; feedback: string | null; submission_type: string }>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedMod, setExpandedMod] = useState<string | null>(null);
@@ -119,7 +124,7 @@ export default function InstructorStudentProgress() {
     else {
       setCourseId(''); setCourseName(''); setStudentName(''); setStudentCohortId('');
       setModules([]); setLessons([]); setProgress([]);
-      setSchedules([]); setSurveys([]); setAssignments([]);
+      setSchedules([]); setSurveys([]); setAssignments([]); setQuizResults([]); setAssignScoreByLesson({});
       setQuizAvg(null); setAssignAvg(null); setAttendAvg(null);
       setFinalAvg(null); setWeighted(null); setTotalClasses(0);
       setPresentCount(0); setAttendDetails([]); setFinalDetails([]);
@@ -301,24 +306,34 @@ export default function InstructorStudentProgress() {
       const lessonList = lessData || [];
       setLessons(lessonList);
 
-      // All data in parallel
-      const [progRes, schedRes, survRes, assignRes, faAssessRes] = await Promise.all([
+      // All data in parallel - NOW INCLUDES quiz_results
+      const [progRes, schedRes, survRes, assignRes, faAssessRes, quizRes] = await Promise.all([
         supabase.from('lesson_progress').select('*').eq('user_id', studentId),
         supabase.from('schedules').select('*').eq('course_id', courseData.id),
         supabase.from('survey_responses').select('lesson_id, rating, answers, created_at').eq('user_id', studentId),
-        supabase.from('assignment_submissions').select('lesson_id, score, status, submitted_at, feedback, submission_type').eq('user_id', studentId),
+        // FIX: Also fetch assignment_id to handle cases where lesson_id is null
+        supabase.from('assignment_submissions').select('id, lesson_id, assignment_id, score, total_marks, status, submitted_at, feedback, submission_type').eq('user_id', studentId),
         supabase.from('assessments').select('id, title, type, total_marks, questions').eq('course_id', courseData.id).eq('status', 'published'),
+        // FIX: Fetch quiz results from the quiz_results table instead of relying on lesson_progress.score
+        supabase.from('quiz_results').select('id, user_id, lesson_id, course_id, score, total_questions, passed, created_at')
+          .eq('user_id', studentId),
       ]);
 
       setProgress(progRes.data || []);
       setSchedules(schedRes.data || []);
       setSurveys(survRes.data || []);
       setAssignments(assignRes.data || []);
+      setQuizResults((quizRes.data || []) as QuizResultRow[]);
 
-      // ── Gradebook calculations ──
+      // -- Gradebook calculations --
       const progRows = (progRes.data || []) as Progress[];
       const assignRows = (assignRes.data || []) as AssignSub[];
       const faList = (faAssessRes.data || []) as CourseAssessment[];
+      const qrList = (quizRes.data || []) as QuizResultRow[];
+
+      console.log('[InstructorStudentProgress] quiz_results fetched:', qrList.length, qrList);
+      console.log('[InstructorStudentProgress] lesson_progress rows:', progRows.length);
+      console.log('[InstructorStudentProgress] assignment_submissions raw:', assignRows.length, assignRows);
 
       // Final assessment submissions
       let faSubs: AssessmentSub[] = [];
@@ -328,14 +343,101 @@ export default function InstructorStudentProgress() {
         faSubs = (subs || []) as AssessmentSub[];
       }
 
-      // Quizzes
+      // Quizzes - FIX: Use quiz_results table instead of lesson_progress.score
       const quizLessons = lessonList.filter(l => l.type === 'quiz');
-      const quizScores = quizLessons.map(l => progRows.find(p => p.lesson_id === l.id)?.score).filter((s): s is number => s !== null);
+      // Build a map: lesson_id -> best percentage score from quiz_results
+      const quizScoreByLesson: Record<string, number> = {};
+      qrList.forEach(qr => {
+        if (qr.lesson_id && qr.total_questions > 0) {
+          const pct = Math.round((qr.score / qr.total_questions) * 100);
+          // Keep the highest score if multiple attempts
+          if (!(qr.lesson_id in quizScoreByLesson) || pct > quizScoreByLesson[qr.lesson_id]) {
+            quizScoreByLesson[qr.lesson_id] = pct;
+          }
+        }
+      });
+      console.log('[InstructorStudentProgress] quiz scores by lesson:', quizScoreByLesson);
+      const quizScores = quizLessons
+        .map(l => quizScoreByLesson[l.id])
+        .filter((s): s is number => s !== undefined && s !== null);
       const calcQuizAvg: number | null = quizScores.length > 0 ? Math.round(quizScores.reduce((a, b) => a + b, 0) / quizScores.length) : null;
 
-      // Assignments
+      // Assignments - FIX: Handle both lesson_id and assignment_id linking
       const assignLessons = lessonList.filter(l => l.type === 'assignment');
-      const assignScores = assignLessons.map(l => assignRows.find(a => a.lesson_id === l.id)?.score).filter((s): s is number => s !== null);
+      console.log('[InstructorStudentProgress] assignment lessons in course:', assignLessons.map(l => ({ id: l.id, title: l.title })));
+      console.log('[InstructorStudentProgress] assignRows lesson_id values:', assignRows.map(r => ({ lesson_id: r.lesson_id, assignment_id: (r as any).assignment_id, score: r.score })));
+
+      // Build lesson_id -> score map from assignment_submissions
+      // First pass: direct lesson_id match
+      const assignScoreByLesson: Record<string, { score: number | null; status: string; submitted_at: string; feedback: string | null; submission_type: string }> = {};
+      assignRows.forEach(row => {
+        if (row.lesson_id) {
+          assignScoreByLesson[row.lesson_id] = {
+            score: row.score,
+            status: row.status,
+            submitted_at: row.submitted_at,
+            feedback: row.feedback,
+            submission_type: row.submission_type,
+          };
+        }
+      });
+
+      // Second pass: if any assignment submissions lack lesson_id but have assignment_id,
+      // look up the assignments table to find the lesson_id
+      const assignIdsWithNullLesson = assignRows.filter(r => !r.lesson_id && (r as any).assignment_id).map(r => (r as any).assignment_id);
+      if (assignIdsWithNullLesson.length > 0) {
+        console.log('[InstructorStudentProgress] Some assignment_submissions have null lesson_id, looking up assignments table for:', assignIdsWithNullLesson);
+        const { data: assignLookup } = await supabase
+          .from('assignments')
+          .select('id, lesson_id, title')
+          .in('id', assignIdsWithNullLesson);
+        if (assignLookup && assignLookup.length > 0) {
+          console.log('[InstructorStudentProgress] assignments table lookup result:', assignLookup);
+          assignLookup.forEach(a => {
+            const matchingSub = assignRows.find(r => (r as any).assignment_id === a.id);
+            if (matchingSub && a.lesson_id && !(a.lesson_id in assignScoreByLesson)) {
+              assignScoreByLesson[a.lesson_id] = {
+                score: matchingSub.score,
+                status: matchingSub.status,
+                submitted_at: matchingSub.submitted_at,
+                feedback: matchingSub.feedback,
+                submission_type: matchingSub.submission_type,
+              };
+            }
+          });
+        }
+      }
+
+      // Also try: fetch assignments directly for this course and match
+      const { data: courseAssignments } = await supabase
+        .from('assignments')
+        .select('id, lesson_id, title, course_id')
+        .eq('course_id', courseData.id);
+      if (courseAssignments && courseAssignments.length > 0) {
+        console.log('[InstructorStudentProgress] Course assignments from assignments table:', courseAssignments);
+        courseAssignments.forEach(ca => {
+          if (ca.lesson_id && !(ca.lesson_id in assignScoreByLesson)) {
+            // Check if there's a submission for this assignment_id
+            const matchingSub = assignRows.find(r => (r as any).assignment_id === ca.id);
+            if (matchingSub) {
+              assignScoreByLesson[ca.lesson_id] = {
+                score: matchingSub.score,
+                status: matchingSub.status,
+                submitted_at: matchingSub.submitted_at,
+                feedback: matchingSub.feedback,
+                submission_type: matchingSub.submission_type,
+              };
+            }
+          }
+        });
+      }
+
+      console.log('[InstructorStudentProgress] Final assignScoreByLesson:', assignScoreByLesson);
+      // Store in state so derived section and UI can use it
+      setAssignScoreByLesson(assignScoreByLesson);
+      const assignScores = assignLessons
+        .map(l => assignScoreByLesson[l.id]?.score)
+        .filter((s): s is number => s !== null && s !== undefined);
       const calcAssignAvg: number | null = assignScores.length > 0 ? Math.round(assignScores.reduce((a, b) => a + b, 0) / assignScores.length) : null;
 
       // Final Assessments
@@ -389,6 +491,13 @@ export default function InstructorStudentProgress() {
       }
       const calcWeighted: number | null = wTot > 0 ? Math.round(wSum) : null;
 
+      console.log('[InstructorStudentProgress] Gradebook calc:', {
+        quizAvg: calcQuizAvg, assignAvg: calcAssignAvg, attendAvg: calcAttendAvg,
+        finalAvg: calcFinalAvg, weighted: calcWeighted,
+        quizScoresCount: quizScores.length, assignScoresCount: assignScores.length,
+        assignScoreByLessonKeys: Object.keys(assignScoreByLesson),
+      });
+
       // Set gradebook state
       setQuizAvg(calcQuizAvg);
       setAssignAvg(calcAssignAvg);
@@ -406,16 +515,39 @@ export default function InstructorStudentProgress() {
     } finally { setLoading(false); }
   };
 
-  // ── Derived ──
+  // -- Derived --
   const nonHeaders = lessons.filter(l => l.type !== 'header');
   const completedIds = new Set(progress.filter(p => p.completed).map(p => p.lesson_id));
   const totalLessons = nonHeaders.length;
   const doneLessons = nonHeaders.filter(l => completedIds.has(l.id)).length;
   const overallPct = totalLessons > 0 ? Math.round((doneLessons / totalLessons) * 100) : 0;
 
-  const quizLessons = nonHeaders.filter(l => l.type === 'quiz');
-  const quizProgress = quizLessons.map(l => progress.find(p => p.lesson_id === l.id && p.score !== null)).filter(Boolean) as Progress[];
-  const avgScore = quizProgress.length > 0 ? Math.round(quizProgress.reduce((a, c) => a + (c.score || 0), 0) / quizProgress.length) : null;
+  // FIX: Derive quiz scores from quiz_results table, not lesson_progress
+  const quizLessonList = nonHeaders.filter(l => l.type === 'quiz');
+  const quizScoreMap = useMemo(() => {
+    const map: Record<string, { pct: number; passed: boolean; totalQuestions: number; rawScore: number; createdAt: string }> = {};
+    quizResults.forEach(qr => {
+      if (qr.lesson_id && qr.total_questions > 0) {
+        const pct = Math.round((qr.score / qr.total_questions) * 100);
+        // Keep the latest attempt by lesson_id
+        if (!(qr.lesson_id in map) || new Date(qr.created_at) > new Date(map[qr.lesson_id].createdAt)) {
+          map[qr.lesson_id] = {
+            pct,
+            passed: qr.passed,
+            totalQuestions: qr.total_questions,
+            rawScore: qr.score,
+            createdAt: qr.created_at,
+          };
+        }
+      }
+    });
+    return map;
+  }, [quizResults]);
+
+  const quizProgressLessons = quizLessonList.filter(l => quizScoreMap[l.id] !== undefined);
+  const avgScore = quizProgressLessons.length > 0
+    ? Math.round(quizProgressLessons.reduce((a, l) => a + quizScoreMap[l.id].pct, 0) / quizProgressLessons.length)
+    : null;
 
   const totalSecs = progress.reduce((a, p) => a + (p.time_spent || 0), 0);
 
@@ -424,9 +556,14 @@ export default function InstructorStudentProgress() {
   const ratings = surveys.map(s => s.rating).filter((r): r is number => r !== null && r > 0);
   const avgRating = ratings.length > 0 ? Math.round(ratings.reduce((a, b) => a + b, 0) / ratings.length * 10) / 10 : null;
 
-  const assignLessons = nonHeaders.filter(l => l.type === 'assignment');
-  const gradedAssigns = assignments.filter(a => a.score !== null);
-  const avgAssignScore = gradedAssigns.length > 0 ? Math.round(gradedAssigns.reduce((a, c) => a + (c.score || 0), 0) / gradedAssigns.length) : null;
+  const assignLessonList = nonHeaders.filter(l => l.type === 'assignment');
+  // FIX: Use assignScoreByLesson for proper assignment score derivation
+  const assignDerivedScores = assignLessonList
+    .map(l => assignScoreByLesson[l.id]?.score)
+    .filter((s): s is number => s !== null && s !== undefined);
+  const avgAssignScore = assignDerivedScores.length > 0
+    ? Math.round(assignDerivedScores.reduce((a, b) => a + b, 0) / assignDerivedScores.length)
+    : null;
 
   const modProgress = modules.map(mod => {
     const modLess = nonHeaders.filter(l => l.module_id === mod.id);
@@ -453,7 +590,7 @@ export default function InstructorStudentProgress() {
   const streak = last7.filter(day => progress.some(p => p.completed_at && new Date(p.completed_at).toDateString() === day)).length;
 
   const selectedStudent = students.find(s => s.id === selectedStudentId);
-  const grade = weighted !== null ? getLetterGrade(weighted) : '—';
+  const grade = weighted !== null ? getLetterGrade(weighted) : '--';
   const gpa = weighted !== null ? getGPA(weighted) : 0;
 
   // Filtered students for search
@@ -468,7 +605,7 @@ export default function InstructorStudentProgress() {
     );
   }, [students, searchQuery]);
 
-  // ── Renders ──
+  // -- Renders --
   if (loadingStudents) return (
     <div className="flex items-center justify-center min-h-[60vh] gap-3">
       <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
@@ -493,7 +630,7 @@ export default function InstructorStudentProgress() {
       <div className="flex justify-between items-start flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Student Progress</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Monitor your students' learning progress & grades</p>
+          <p className="text-gray-500 text-sm mt-0.5">Monitor your students&apos; learning progress &amp; grades</p>
         </div>
         <div className="flex items-center gap-2 text-sm text-gray-500 bg-white px-3 py-1.5 rounded-lg border">
           <Users className="w-4 h-4 text-indigo-500" />
@@ -587,7 +724,7 @@ export default function InstructorStudentProgress() {
                       s.progress > 0 ? 'bg-orange-100 text-orange-700' :
                       'bg-gray-100 text-gray-400'
                     }`}>
-                      {s.progress >= 70 ? 'A' : s.progress >= 60 ? 'B' : s.progress >= 50 ? 'C' : s.progress >= 45 ? 'D' : s.progress >= 40 ? 'E' : s.progress > 0 ? 'F' : '—'}
+                      {s.progress >= 70 ? 'A' : s.progress >= 60 ? 'B' : s.progress >= 50 ? 'C' : s.progress >= 45 ? 'D' : s.progress >= 40 ? 'E' : s.progress > 0 ? 'F' : '--'}
                     </span>
                   </div>
                   <div className="col-span-1 flex items-center justify-end">
@@ -604,7 +741,7 @@ export default function InstructorStudentProgress() {
       {selectedStudentId && loading && (
         <div className="flex items-center justify-center py-20 gap-3">
           <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-          <span className="text-gray-500">Loading {studentName}'s progress...</span>
+          <span className="text-gray-500">Loading {studentName}&apos;s progress...</span>
         </div>
       )}
 
@@ -637,7 +774,7 @@ export default function InstructorStudentProgress() {
             </Button>
           </div>
 
-          {/* ═══════════ GRADEBOOK CARD ═══════════ */}
+          {/* ======== GRADEBOOK CARD ======== */}
           <Card className="border-0 shadow-sm overflow-hidden">
             <div className={`p-6 text-white ${
               weighted !== null && weighted >= 70 ? 'bg-gradient-to-br from-emerald-600 to-emerald-700'
@@ -663,7 +800,7 @@ export default function InstructorStudentProgress() {
                 ].map(({ label, value }) => (
                   <div key={label} className="flex-1 bg-white/10 rounded-lg px-3 py-2">
                     <p className="text-white/60 text-[10px]">{label}</p>
-                    <p className="text-white font-bold">{value !== null ? `${value}%` : '—'}</p>
+                    <p className="text-white font-bold">{value !== null ? `${value}%` : '--'}</p>
                   </div>
                 ))}
               </div>
@@ -683,11 +820,10 @@ export default function InstructorStudentProgress() {
                       strokeLinecap="round" transform="rotate(-90 70 70)" className="transition-all duration-1000" />
                     <text x="70" y="62" textAnchor="middle" fill="white" fontSize="26" fontWeight="bold">{overallPct}%</text>
                     <text x="70" y="78" textAnchor="middle" fill="rgba(255,255,255,0.7)" fontSize="9">COMPLETE</text>
-                    {overallPct === 100 && <text x="70" y="96" textAnchor="middle" fontSize="16">🏆</text>}
                   </svg>
                 </div>
                 <div className="flex-1 w-full">
-                  <p className="text-white/60 text-xs uppercase tracking-wider mb-3">{studentName}'s Progress</p>
+                  <p className="text-white/60 text-xs uppercase tracking-wider mb-3">{studentName}&apos;s Progress</p>
                   <div className="grid grid-cols-2 gap-3">
                     {[
                       { label: 'Lessons Done', value: `${doneLessons}/${totalLessons}` },
@@ -706,9 +842,9 @@ export default function InstructorStudentProgress() {
             </div>
             <div className="grid grid-cols-3 divide-x border-t bg-white">
               {[
-                { label: 'Quiz Average', value: avgScore !== null ? `${avgScore}%` : '—', color: avgScore !== null && avgScore >= 70 ? 'text-emerald-600' : avgScore !== null ? 'text-red-500' : 'text-gray-400', icon: HelpCircle },
+                { label: 'Quiz Average', value: avgScore !== null ? `${avgScore}%` : '--', color: avgScore !== null && avgScore >= 70 ? 'text-emerald-600' : avgScore !== null ? 'text-red-500' : 'text-gray-400', icon: HelpCircle },
                 { label: 'Surveys Done', value: `${surveysDone}/${surveyLessons.length}`, color: 'text-purple-600', icon: ClipboardList },
-                { label: 'Avg Rating', value: avgRating !== null ? `${avgRating}★` : '—', color: 'text-amber-500', icon: Star },
+                { label: 'Avg Rating', value: avgRating !== null ? `${avgRating}` : '--', color: 'text-amber-500', icon: Star },
               ].map(({ label, value, color, icon: Icon }) => (
                 <div key={label} className="p-4 text-center">
                   <Icon className={`w-4 h-4 ${color} mx-auto mb-1`} />
@@ -724,7 +860,7 @@ export default function InstructorStudentProgress() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <BarChart3 className="w-4 h-4 text-indigo-500" /> Activity — Last 14 Days
+                  <BarChart3 className="w-4 h-4 text-indigo-500" /> Activity - Last 14 Days
                 </CardTitle>
                 <div className="flex items-center gap-1.5 text-xs text-orange-600 bg-orange-50 px-2.5 py-1 rounded-full font-medium">
                   <Flame className="w-3.5 h-3.5" /> {streak}-day streak
@@ -782,7 +918,7 @@ export default function InstructorStudentProgress() {
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${
                         complete ? 'bg-emerald-500 text-white' : locked ? 'bg-gray-200 text-gray-400' : 'bg-indigo-100 text-indigo-700'
                       }`}>
-                        {complete ? '✓' : locked ? <Lock className="w-3.5 h-3.5" /> : mod.order_index + 1}
+                        {complete ? '\u2713' : locked ? <Lock className="w-3.5 h-3.5" /> : mod.order_index + 1}
                       </div>
                       <div>
                         <p className={`text-sm font-semibold ${complete ? 'text-emerald-800' : 'text-gray-800'}`}>{mod.title}</p>
@@ -811,8 +947,12 @@ export default function InstructorStudentProgress() {
                         const prog = progress.find(p => p.lesson_id === lesson.id);
                         const done_ = completedIds.has(lesson.id);
                         const Icon = LESSON_ICONS[lesson.type] || FileText;
-                        const assign = assignments.find(a => a.lesson_id === lesson.id);
+                        const assign = assignScoreByLesson[lesson.id] || assignments.find(a => a.lesson_id === lesson.id);
                         const survey = surveys.find(s => s.lesson_id === lesson.id);
+                        // FIX: For quiz lessons, get score from quiz_results (quizScoreMap)
+                        const quizData = lesson.type === 'quiz' ? quizScoreMap[lesson.id] : null;
+                        const displayScore = quizData ? quizData.pct : prog?.score ?? null;
+                        const displayPassed = quizData ? quizData.passed : null;
                         return (
                           <div key={lesson.id} className={`flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${done_ ? 'opacity-70' : ''}`}>
                             <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${done_ ? 'bg-emerald-100' : 'bg-white border'}`}>
@@ -823,7 +963,13 @@ export default function InstructorStudentProgress() {
                               <p className="text-xs text-gray-400 capitalize">{lesson.type === 'url' ? 'Link' : lesson.type}</p>
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
-                              {(lesson.type === 'quiz' || lesson.type === 'final_exam') && prog?.score !== null && prog?.score !== undefined && (
+                              {/* FIX: Show quiz score from quiz_results */}
+                              {lesson.type === 'quiz' && quizData && (
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${quizData.pct >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                                  {quizData.rawScore}/{quizData.totalQuestions} ({quizData.pct}%)
+                                </span>
+                              )}
+                              {lesson.type === 'final_exam' && prog?.score !== null && prog?.score !== undefined && (
                                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${prog.score >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>{prog.score}%</span>
                               )}
                               {lesson.type === 'survey' && survey?.rating && (
@@ -854,7 +1000,7 @@ export default function InstructorStudentProgress() {
           </Card>
 
           {/* Quiz Results */}
-          {quizLessons.length > 0 && (
+          {quizLessonList.length > 0 && (
             <Card className="border-0 shadow-sm">
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -865,14 +1011,19 @@ export default function InstructorStudentProgress() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {quizProgress.length === 0 ? (
+                {quizProgressLessons.length === 0 ? (
                   <div className="text-center py-6"><Target className="w-8 h-8 text-gray-200 mx-auto mb-2" /><p className="text-sm text-gray-400">No quizzes completed yet.</p></div>
                 ) : (
                   <div className="space-y-2">
-                    {quizLessons.map(lesson => {
-                      const prog = progress.find(p => p.lesson_id === lesson.id);
-                      const done = !!prog?.completed;
-                      const score = prog?.score ?? null;
+                    {quizLessonList.map(lesson => {
+                      // FIX: Get quiz data from quiz_results, not lesson_progress
+                      const quizData = quizScoreMap[lesson.id];
+                      const done = !!quizData;
+                      const score = quizData?.pct ?? null;
+                      const rawScore = quizData?.rawScore ?? null;
+                      const totalQ = quizData?.totalQuestions ?? null;
+                      const passed = quizData?.passed ?? null;
+                      const completedAt = quizData?.createdAt ?? null;
                       return (
                         <div key={lesson.id} className={`flex items-center justify-between p-3 rounded-xl border ${done ? 'bg-white' : 'bg-gray-50 opacity-60'}`}>
                           <div className="flex items-center gap-3">
@@ -881,15 +1032,24 @@ export default function InstructorStudentProgress() {
                             </div>
                             <div>
                               <p className="text-sm font-medium text-gray-800">{lesson.title}</p>
-                              <p className="text-xs text-gray-400">{!done ? 'Not attempted' : prog?.completed_at ? new Date(prog.completed_at).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Completed'}</p>
+                              <p className="text-xs text-gray-400">
+                                {!done ? 'Not attempted' : completedAt ? new Date(completedAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Completed'}
+                              </p>
                             </div>
                           </div>
                           {done && score !== null ? (
                             <div className="flex items-center gap-2">
                               <div className="flex gap-0.5">{[1,2,3,4,5].map(s => <Star key={s} className={`w-3 h-3 ${score >= s*20 ? 'text-amber-400 fill-amber-400' : 'text-gray-200'}`} />)}</div>
-                              <span className={`text-sm font-bold px-2.5 py-1 rounded-lg ${score >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>{score}%</span>
+                              <span className={`text-sm font-bold px-2.5 py-1 rounded-lg ${score >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                                {rawScore}/{totalQ} ({score}%)
+                              </span>
+                              {passed !== null && (
+                                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${passed ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                                  {passed ? 'Passed' : 'Failed'}
+                                </span>
+                              )}
                             </div>
-                          ) : done ? <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-lg">No score</span> : <span className="text-xs text-gray-300">—</span>}
+                          ) : done ? <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-lg">No score</span> : <span className="text-xs text-gray-300">--</span>}
                         </div>
                       );
                     })}
@@ -905,7 +1065,7 @@ export default function InstructorStudentProgress() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
                   <ClipboardList className="w-4 h-4 text-purple-500" /> Survey Responses
-                  {avgRating && <span className="ml-auto text-xs font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{avgRating}★ avg</span>}
+                  {avgRating && <span className="ml-auto text-xs font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{avgRating}/5 avg</span>}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -940,7 +1100,7 @@ export default function InstructorStudentProgress() {
           )}
 
           {/* Assignment Status */}
-          {assignLessons.length > 0 && (
+          {assignLessonList.length > 0 && (
             <Card className="border-0 shadow-sm">
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -952,8 +1112,8 @@ export default function InstructorStudentProgress() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  {assignLessons.map(lesson => {
-                    const sub = assignments.find(a => a.lesson_id === lesson.id);
+                  {assignLessonList.map(lesson => {
+                    const sub = assignScoreByLesson[lesson.id] || assignments.find(a => a.lesson_id === lesson.id);
                     return (
                       <div key={lesson.id} className="flex items-center justify-between p-3 rounded-xl border bg-white">
                         <div className="flex items-center gap-3">
@@ -963,14 +1123,14 @@ export default function InstructorStudentProgress() {
                           <div>
                             <p className="text-sm font-medium text-gray-800">{lesson.title}</p>
                             <p className="text-xs text-gray-400">{sub ? `Submitted ${new Date(sub.submitted_at).toLocaleDateString()}` : 'Not submitted'}</p>
-                            {sub?.feedback && <p className="text-xs text-indigo-600 mt-0.5 italic">"{sub.feedback}"</p>}
+                            {sub?.feedback && <p className="text-xs text-indigo-600 mt-0.5 italic">&quot;{sub.feedback}&quot;</p>}
                           </div>
                         </div>
                         {sub ? (
                           sub.score !== null
                             ? <span className={`text-sm font-bold px-3 py-1 rounded-lg ${sub.score >= 70 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>{sub.score}%</span>
                             : <span className="text-xs bg-amber-100 text-amber-700 font-medium px-3 py-1 rounded-lg">Awaiting grade</span>
-                        ) : <span className="text-xs text-gray-300">—</span>}
+                        ) : <span className="text-xs text-gray-300">--</span>}
                       </div>
                     );
                   })}
@@ -1020,7 +1180,7 @@ export default function InstructorStudentProgress() {
                       ) : f.status !== 'none' ? (
                         <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Awaiting Grade</span>
                       ) : (
-                        <span className="text-xs text-gray-300">—</span>
+                        <span className="text-xs text-gray-300">--</span>
                       )}
                     </div>
                   ))}
@@ -1037,7 +1197,7 @@ export default function InstructorStudentProgress() {
                   <UserCheck className="w-4 h-4 text-teal-500" /> Attendance
                   {attendAvg !== null && (
                     <span className={`ml-auto text-xs font-bold px-2 py-0.5 rounded-full ${attendAvg >= 75 ? 'bg-emerald-100 text-emerald-700' : attendAvg >= 50 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'}`}>
-                      {presentCount}/{totalClasses} — {attendAvg}%
+                      {presentCount}/{totalClasses} - {attendAvg}%
                     </span>
                   )}
                 </CardTitle>
