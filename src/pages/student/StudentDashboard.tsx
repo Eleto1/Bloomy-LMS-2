@@ -75,11 +75,9 @@ export default function StudentDashboard() {
 
       if (profErr) {
         console.warn('[Dashboard] Profile+cohort join failed:', profErr.message, profErr.code);
-        // Retry without cohort join — the join itself may be the problem
         const retry = await supabase.from('profiles').select('*').eq('id', user.id).single();
         if (retry.error) {
           console.error('[Dashboard] Profile row missing entirely:', retry.error.message);
-          // Auto-create profile from auth metadata
           const meta = user.user_metadata || {};
           const fullName = meta.full_name || meta.name || user.email?.split('@')[0] || 'Student';
           const { data: newProf, error: insertErr } = await supabase
@@ -115,11 +113,9 @@ export default function StudentDashboard() {
       let cohortData = (prof as any).cohorts;
 
       if (cohortData?.course) {
-        // Cohort joined successfully
         program = cohortData.course;
         console.log('[Dashboard] Program from cohort join:', program);
       } else if (prof.cohort_id) {
-        // Profile has cohort_id but join returned nothing — fetch cohort manually
         console.log('[Dashboard] cohort_id exists but join returned nothing. Fetching cohort manually...');
         const { data: cohort } = await supabase
           .from('cohorts').select('name, course').eq('id', prof.cohort_id).single();
@@ -131,16 +127,13 @@ export default function StudentDashboard() {
           console.error('[Dashboard] Cohort not found for id:', prof.cohort_id);
         }
       } else {
-        // No cohort_id at all — try to find ANY cohort that might belong
         console.warn('[Dashboard] Profile has no cohort_id. Trying to auto-assign...');
         const { data: allCohorts } = await supabase
           .from('cohorts').select('id, name, course').limit(10);
         if (allCohorts && allCohorts.length > 0) {
-          // Use the first available cohort
           const firstCohort = allCohorts[0];
           cohortData = firstCohort;
           program = firstCohort.course;
-          // Update the profile with this cohort
           const { error: updateErr } = await supabase
             .from('profiles').update({ cohort_id: firstCohort.id }).eq('id', user.id);
           if (updateErr) console.error('[Dashboard] Could not update cohort_id:', updateErr.message);
@@ -173,7 +166,6 @@ export default function StudentDashboard() {
       }
 
       if (!courseData) {
-        // List all available courses for debugging
         const { data: allCourses } = await supabase.from('courses').select('id, title, program, status').limit(20);
         console.error('[Dashboard] No course found for program:', program);
         console.log('[Dashboard] All courses in DB:', allCourses);
@@ -191,7 +183,6 @@ export default function StudentDashboard() {
       console.log('[Dashboard] Modules found:', modList.length);
       if (!modList.length) {
         console.warn('[Dashboard] No modules for course:', courseData.id, courseData.title);
-        // Don't return — show what we have
       }
 
       // ── 4. Lessons ───────────────────────────────────────────────────────
@@ -296,7 +287,6 @@ export default function StudentDashboard() {
 
       {/* ── Hero Header ────────────────────────────────────────────────────── */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-700 via-indigo-600 to-violet-700 p-6 text-white shadow-xl">
-        {/* Background decoration */}
         <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-32 translate-x-32" />
         <div className="absolute bottom-0 left-20 w-40 h-40 bg-white/5 rounded-full translate-y-20" />
 
@@ -337,7 +327,7 @@ export default function StudentDashboard() {
             <Ring pct={completionPct} size={96} stroke={7} color="white" />
             {course && (
               <Button className="bg-white text-indigo-700 hover:bg-indigo-50 font-semibold shadow-lg"
-                onClick={() => navigate(`/student/learn/${course.id}${nextLesson ? `?lesson=${nextLesson.id}` : ''}`)}>
+                onClick={() => navigate(`/student/courses/${course.id}${nextLesson ? `?lesson=${nextLesson.id}` : ''}`)}>
                 <PlayCircle className="w-4 h-4 mr-2" />
                 {nextLesson ? 'Continue' : 'Review Course'}
               </Button>
@@ -435,7 +425,7 @@ export default function StudentDashboard() {
 
             {course && (
               <Button variant="outline" size="sm" className="w-full mt-1"
-                onClick={() => navigate(`/student/learn/${course.id}`)}>
+                onClick={() => navigate(`/student/courses/${course.id}`)}>
                 Open Course <ChevronRight className="w-4 h-4 ml-1" />
               </Button>
             )}
@@ -532,7 +522,7 @@ export default function StudentDashboard() {
                   </p>
                 </div>
                 <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 flex-shrink-0"
-                  onClick={() => navigate(`/student/learn/${course.id}?lesson=${nextLesson.id}`)}>
+                  onClick={() => navigate(`/student/courses/${course.id}?lesson=${nextLesson.id}`)}>
                   Start <ArrowRight className="w-3.5 h-3.5 ml-1" />
                 </Button>
               </div>

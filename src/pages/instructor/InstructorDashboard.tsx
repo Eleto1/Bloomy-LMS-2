@@ -87,7 +87,6 @@ export default function InstructorDashboard() {
   const [totalPending, setTotalPending] = useState(0);
   const [schemaMode, setSchemaMode] = useState<string | null>(null);
 
-  // ✅ FIX: Deduplicate cohorts by name for UI display
   const uniqueCohorts = useMemo(() => {
     const map = new Map<string, Cohort>();
     cohorts.forEach(c => {
@@ -221,7 +220,6 @@ export default function InstructorDashboard() {
       const cohortMap: Record<string, Cohort> = {};
       cohortList.forEach(c => { cohortMap[c.id] = c; });
 
-      // 2. Students in these cohorts
       const { data: studData } = await supabase
         .from('profiles')
         .select('id, full_name, email, cohort_id')
@@ -236,7 +234,6 @@ export default function InstructorDashboard() {
       const studentMap: Record<string, { name: string; cohort_id: string }> = {};
       studentList.forEach(s => { studentMap[s.id] = { name: s.full_name, cohort_id: s.cohort_id }; });
 
-      // 3. Pending (ungraded) submissions — top 8
       const { data: subData } = await supabase
         .from('assignment_submissions')
         .select('id, user_id, lesson_id, submitted_at, submission_type, status')
@@ -270,7 +267,6 @@ export default function InstructorDashboard() {
         setPendingGrades(enriched);
       }
 
-      // 4. Overall attendance
       const { data: attendData } = await supabase
         .from('attendance')
         .select('student_id, status')
@@ -281,7 +277,6 @@ export default function InstructorDashboard() {
         setAvgAttendance(Math.round((attendRows.filter(a => a.status === 'present').length / attendRows.length) * 100));
       }
 
-      // 5. Per-cohort stats
       const programs = [...new Set(cohortList.map(c => c.course))];
       const { data: courseData } = await supabase
         .from('courses')
@@ -403,8 +398,8 @@ export default function InstructorDashboard() {
           <Button variant="outline" onClick={loadData}>
             <CircleDot className="w-4 h-4 mr-2" /> Retry
           </Button>
-          <Button variant="outline" onClick={() => navigate('/settings')}>
-            Go to Settings
+          <Button variant="outline" onClick={() => navigate('/instructor/courses')}>
+            View Courses
           </Button>
         </div>
       </div>
@@ -435,7 +430,6 @@ export default function InstructorDashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           {
-            // ✅ FIX: Use uniqueCohorts.length
             label: 'My Cohorts',
             value: uniqueCohorts.length,
             icon: Layers,
@@ -504,7 +498,7 @@ export default function InstructorDashboard() {
                   )}
                 </div>
                 {totalPending > 0 && (
-                  <Button variant="ghost" size="sm" className="text-xs text-indigo-600 gap-1 hover:text-indigo-700" onClick={() => navigate('/grades')}>
+                  <Button variant="ghost" size="sm" className="text-xs text-indigo-600 gap-1 hover:text-indigo-700" onClick={() => navigate('/instructor/grades')}>
                     View all <ArrowRight className="w-3 h-3" />
                   </Button>
                 )}
@@ -549,7 +543,7 @@ export default function InstructorDashboard() {
                         <Button
                           size="sm"
                           className="h-7 text-xs px-3 bg-indigo-600 hover:bg-indigo-700 gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => navigate('/grades')}
+                          onClick={() => navigate('/instructor/grades')}
                         >
                           <Pencil className="w-3 h-3" /> Grade
                         </Button>
@@ -570,10 +564,10 @@ export default function InstructorDashboard() {
               </h2>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { label: 'Take Attendance', icon: CalendarDays, href: '/attendance', color: 'bg-blue-50 text-blue-600 hover:bg-blue-100' },
-                  { label: 'Grade Work', icon: ClipboardCheck, href: '/grades', color: 'bg-amber-50 text-amber-600 hover:bg-amber-100' },
-                  { label: 'View Progress', icon: BarChart3, href: '/progress', color: 'bg-purple-50 text-purple-600 hover:bg-purple-100' },
-                  { label: 'My Students', icon: Users, href: '/students', color: 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' },
+                  { label: 'Take Attendance', icon: CalendarDays, href: '/instructor/attendance', color: 'bg-blue-50 text-blue-600 hover:bg-blue-100' },
+                  { label: 'Grade Work', icon: ClipboardCheck, href: '/instructor/grades', color: 'bg-amber-50 text-amber-600 hover:bg-amber-100' },
+                  { label: 'View Progress', icon: BarChart3, href: '/instructor/progress', color: 'bg-purple-50 text-purple-600 hover:bg-purple-100' },
+                  { label: 'My Students', icon: Users, href: '/instructor/students', color: 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100' },
                 ].map(({ label, icon: Icon, href, color }) => (
                   <Link key={label} to={href}>
                     <Button
@@ -595,16 +589,12 @@ export default function InstructorDashboard() {
                 <h2 className="font-bold text-gray-900 flex items-center gap-2">
                   <GraduationCap className="w-4 h-4 text-indigo-500" /> My Cohorts
                 </h2>
-                {/* ✅ FIX: Use uniqueCohorts.length */}
                 <Badge variant="secondary" className="text-[11px] font-semibold">{uniqueCohorts.length}</Badge>
               </div>
               <div className="space-y-2">
-                {/* ✅ FIX: Map over uniqueCohorts */}
                 {uniqueCohorts.map(c => {
-                  // Aggregate stats for cohorts with the same name
                   const relevantStats = cohortStats.filter(s => s.name === c.name);
                   const totalStudents = relevantStats.reduce((sum, s) => sum + s.studentCount, 0);
-                  // Average progress/attendance across duplicates
                   const avgProg = relevantStats.length > 0 
                     ? Math.round(relevantStats.reduce((sum, s) => sum + s.avgProgress, 0) / relevantStats.length) 
                     : 0;
@@ -615,9 +605,9 @@ export default function InstructorDashboard() {
 
                   return (
                     <div
-                      key={c.id} // Use ID from the first occurrence
+                      key={c.id}
                       className="p-3 rounded-xl bg-gray-50 hover:bg-indigo-50/40 transition-colors cursor-pointer"
-                      onClick={() => navigate('/students')}
+                      onClick={() => navigate('/instructor/students')}
                     >
                       <div className="flex items-center justify-between mb-1.5">
                         <p className="text-sm font-semibold text-gray-900 truncate">{c.name}</p>

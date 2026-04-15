@@ -1,6 +1,5 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { supabase } from './lib/supabase';
-import { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
 import DashboardLayout from './components/DashboardLayout';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Toaster } from '@/components/ui/toaster';
@@ -27,6 +26,7 @@ import AdminSurveyAnalytics from './pages/admin/AdminSurveyAnalytics';
 import AdminSettings from './pages/admin/AdminSettings';
 
 // Instructor Pages
+import InstructorStudentWork from './pages/instructor/InstructorStudentWork';
 import InstructorDashboard from './pages/instructor/InstructorDashboard';
 import InstructorStudents from './pages/instructor/InstructorStudents';
 import InstructorCourses from './pages/instructor/InstructorCourses';
@@ -78,6 +78,11 @@ function Footer() {
   );
 }
 
+/* ──────────────────────────────────────────────
+   ROUTE GUARDS
+   ────────────────────────────────────────────── */
+
+// Blocks unauthenticated users — redirects to /login
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
@@ -85,18 +90,30 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Blocks non-admin users
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { role } = useAuth();
   if (role !== 'admin') return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
+// Blocks non-instructor users
 function InstructorRoute({ children }: { children: React.ReactNode }) {
   const { role } = useAuth();
   if (role !== 'instructor') return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
+// Blocks authenticated users from auth pages
+// If user is logged in, redirect to their correct dashboard
+function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { user, role, loading } = useAuth();
+  if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
+  if (user && role) return <Navigate to={`/${role}`} replace />;
+  return <>{children}</>;
+}
+
+// Centered layout for auth pages (no sidebar)
 function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
@@ -107,6 +124,47 @@ function AuthLayout({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+/* ──────────────────────────────────────────────
+   POST-LOGIN REDIRECTOR
+   ──────────────────────────────────────────────
+   This component watches for login events and ensures
+   the user ends up on the correct role-based dashboard.
+   It handles the case where the Login component does
+   its own navigation to a wrong path.
+*/
+function PostLoginRedirector() {
+  const { role, user, loading } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const hasRedirected = useRef(false);
+
+  useEffect(() => {
+    // Only redirect when:
+    // 1. Not loading
+    // 2. User is logged in with a role
+    // 3. We haven't redirected yet this session
+    // 4. User is NOT already on their correct dashboard path
+    if (loading || !user || !role || hasRedirected.current) return;
+
+    const expectedPath = `/${role}`;
+    const isOnAuthPage = ['/login', '/register', '/forgot-password'].includes(location.pathname);
+    const isOnCorrectDashboard = location.pathname === expectedPath || location.pathname.startsWith(expectedPath + '/');
+
+    if (isOnAuthPage || !isOnCorrectDashboard) {
+      // User is on auth page or wrong dashboard — redirect them
+      console.log('[Redirect] Sending', role, 'to', expectedPath, 'from', location.pathname);
+      hasRedirected.current = true;
+      navigate(expectedPath, { replace: true });
+    }
+  }, [loading, user, role, location.pathname, navigate]);
+
+  return null; // This component renders nothing
+}
+
+/* ──────────────────────────────────────────────
+   MAIN ROUTER
+   ────────────────────────────────────────────── */
 
 function AppRoutes() {
   const { user, role, loading } = useAuth();
@@ -119,67 +177,66 @@ function AppRoutes() {
   };
 
   return (
-    <Routes>
-      <Route path="/login" element={<AuthLayout><Login /></AuthLayout>} />
-      <Route path="/register" element={<AuthLayout><Register /></AuthLayout>} />
-      <Route path="/forgot-password" element={<AuthLayout><ForgotPassword /></AuthLayout>} />
+    <>
+      {/* Invisible component that handles post-login redirects */}
+      <PostLoginRedirector />
 
-      {/* ADMIN SECTION */}
-      <Route path="/admin" element={<ProtectedRoute><AdminRoute><DashboardLayout /></AdminRoute></ProtectedRoute>}>
-        <Route index element={<AdminDashboard />} />
-        <Route path="courses" element={<AdminCourses />} />
-        <Route path="students" element={<AdminStudents />} />
-        <Route path="instructors" element={<AdminInstructors />} />
-        <Route path="cohorts" element={<AdminCohorts />} />
-        <Route path="attendance" element={<AdminAttendance />} />
-        <Route path="progress" element={<AdminProgress />} />
-        <Route path="final-assessment" element={<AdminFinalAssessment />} />
-        <Route path="gradebook" element={<AdminGradebook />} />
-        <Route path="payments" element={<AdminPayments />} />
-        <Route path="reports" element={<AdminReports />} />
-        <Route path="AdminSurveyAnalytics" element={<AdminSurveyAnalytics />} />
-        <Route path="survey-analytics" element={<AdminSurveyAnalytics />} />
-        <Route path="settings" element={<AdminSettings />} />
-      </Route>
+      <Routes>
+        {/* ── AUTH PAGES ── */}
+        <Route path="/login" element={<AuthLayout><PublicOnlyRoute><Login /></PublicOnlyRoute></AuthLayout>} />
+        <Route path="/register" element={<AuthLayout><PublicOnlyRoute><Register /></PublicOnlyRoute></AuthLayout>} />
+        <Route path="/forgot-password" element={<AuthLayout><PublicOnlyRoute><ForgotPassword /></PublicOnlyRoute></AuthLayout>} />
 
-      {/* INSTRUCTOR SECTION */}
-      <Route path="/instructor" element={<ProtectedRoute><InstructorRoute><DashboardLayout /></InstructorRoute></ProtectedRoute>}>
-        <Route index element={<InstructorDashboard />} />
-        <Route path="students" element={<InstructorStudents />} />
-        <Route path="progress" element={<InstructorStudentProgress />} />
-        <Route path="courses" element={<InstructorCourses />} />
-        <Route path="final-assessment" element={<AdminFinalAssessment />} />
-        <Route path="attendance" element={<AdminAttendance />} />
-        <Route path="assignments" element={<Placeholder />} />
-        <Route path="grades" element={<Placeholder />} />
-        <Route path="announcements" element={<Placeholder />} />
-      </Route>
+        {/* ── ADMIN SECTION ── */}
+        <Route path="/admin" element={<ProtectedRoute><AdminRoute><DashboardLayout /></AdminRoute></ProtectedRoute>}>
+          <Route index element={<AdminDashboard />} />
+          <Route path="courses" element={<AdminCourses />} />
+          <Route path="students" element={<AdminStudents />} />
+          <Route path="instructors" element={<AdminInstructors />} />
+          <Route path="cohorts" element={<AdminCohorts />} />
+          <Route path="attendance" element={<AdminAttendance />} />
+          <Route path="progress" element={<AdminProgress />} />
+          <Route path="final-assessment" element={<AdminFinalAssessment />} />
+          <Route path="gradebook" element={<AdminGradebook />} />
+          <Route path="payments" element={<AdminPayments />} />
+          <Route path="reports" element={<AdminReports />} />
+          <Route path="AdminSurveyAnalytics" element={<AdminSurveyAnalytics />} />
+          <Route path="survey-analytics" element={<AdminSurveyAnalytics />} />
+          <Route path="settings" element={<AdminSettings />} />
+        </Route>
 
-      {/* STUDENT SECTION */}
-      <Route path="/student" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-        <Route index element={<StudentDashboard />} />
-        <Route path="gradebook" element={<StudentGradebook />} />
-        <Route path="courses" element={<StudentCourses />} />
-        <Route path="students" element={<InstructorStudents />} />
-        <Route path="courses/:courseId" element={<StudentCourseViewer />} />
-        <Route path="progress" element={<StudentProgress />} />
-        <Route path="final-assessment" element={<StudentFinalAssessment />} />
-      </Route>
+        {/* ── INSTRUCTOR SECTION ── */}
+        <Route path="/instructor" element={<ProtectedRoute><InstructorRoute><DashboardLayout /></InstructorRoute></ProtectedRoute>}>
+          <Route index element={<InstructorDashboard />} />
+          <Route path="students" element={<InstructorStudents />} />
+          <Route path="progress" element={<InstructorStudentProgress />} />
+          <Route path="courses" element={<InstructorCourses />} />
+          <Route path="final-assessment" element={<AdminFinalAssessment />} />
+          <Route path="attendance" element={<AdminAttendance />} />
+          <Route path="assignments" element={<Placeholder />} />
+          <Route path="grades" element={<InstructorStudentWork />} />
+          <Route path="announcements" element={<Placeholder />} />
+        </Route>
 
-      <Route path="/" element={<Navigate to={user ? getHome() : '/login'} replace />} />
-    </Routes>
+        {/* ── STUDENT SECTION ── */}
+        <Route path="/student" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+          <Route index element={<StudentDashboard />} />
+          <Route path="gradebook" element={<StudentGradebook />} />
+          <Route path="courses" element={<StudentCourses />} />
+          <Route path="students" element={<InstructorStudents />} />
+          <Route path="courses/:courseId" element={<StudentCourseViewer />} />
+          <Route path="progress" element={<StudentProgress />} />
+          <Route path="final-assessment" element={<StudentFinalAssessment />} />
+        </Route>
+
+        {/* ── CATCH-ALL ── */}
+        <Route path="/" element={<Navigate to={user ? getHome() : '/login'} replace />} />
+      </Routes>
+    </>
   );
 }
 
 function App() {
-  const [init, setInit] = useState(false);
-  useEffect(() => {
-    supabase.auth.getSession().then(() => setInit(true));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {});
-    return () => subscription.unsubscribe();
-  }, []);
-  if (!init) return <div className="flex h-screen items-center justify-center">Loading Application...</div>;
-
   return (
     <Router>
       <AuthProvider>
@@ -190,4 +247,4 @@ function App() {
   );
 }
 
-export default App
+export default App;

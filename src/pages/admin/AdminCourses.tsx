@@ -286,6 +286,70 @@ export default function AdminCourses() {
     finally { setSaving(false); }
   };
 
+  const handleDuplicateCourse = async (course: Course) => {
+    if (!confirm(`Duplicate "${course.title}"? This will copy all modules and lessons.`)) return;
+    setSaving(true);
+    try {
+      // 1. Duplicate the course row
+      const { data: newCourse, error: courseErr } = await supabase
+        .from('courses')
+        .insert({ title: `${course.title} (Copy)`, description: course.description, program: course.program, status: 'Draft', instructor_id: course.instructor_id || null })
+        .select().single();
+      if (courseErr || !newCourse) throw courseErr || new Error('Failed to create course copy');
+
+      // 2. Fetch all modules for the original course
+      const { data: mods } = await supabase.from('modules').select('*').eq('course_id', course.id).order('order_index');
+      if (mods && mods.length > 0) {
+        // 3. Create copies of all modules
+        const { data: newMods } = await supabase
+          .from('modules')
+          .insert(mods.map(m => ({
+            course_id: newCourse.id,
+            title: m.title,
+            order_index: m.order_index,
+            unlock_date: m.unlock_date || null,
+            sequential_lessons: m.sequential_lessons || false,
+          })))
+          .select();
+
+        if (newMods && newMods.length > 0) {
+          // 4. Fetch all lessons for every original module
+          const oldModIds = mods.map(m => m.id);
+          const { data: lessons } = await supabase.from('lessons').select('*').in('module_id', oldModIds).order('order_index');
+
+          if (lessons && lessons.length > 0) {
+            // 5. Build a mapping of old module ID → new module ID
+            const modIdMap: Record<string, string> = {};
+            mods.forEach((oldMod, idx) => {
+              if (newMods[idx]) modIdMap[oldMod.id] = newMods[idx].id;
+            });
+
+            // 6. Insert copies of all lessons with new module IDs
+            const lessonRows = lessons.map(l => ({
+              module_id: modIdMap[l.module_id] || l.module_id,
+              title: l.title,
+              type: l.type,
+              content: l.content,
+              file_url: l.file_url,
+              file_downloadable: l.file_downloadable,
+              quiz_data: l.quiz_data,
+              assignment_config: l.assignment_config,
+              order_index: l.order_index,
+            }));
+            await supabase.from('lessons').insert(lessonRows);
+          }
+        }
+      }
+
+      toast({ title: 'Course duplicated!', description: `"${course.title} (Copy)" created with all modules and lessons.` });
+      fetchInitialData();
+    } catch (e: any) {
+      toast({ title: 'Duplication failed', description: e.message, variant: 'destructive' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     await supabase.from('courses').delete().eq('id', deleteTarget.id);
@@ -667,6 +731,7 @@ export default function AdminCourses() {
                   <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${course.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>{course.status}</span>
                   <div className="flex gap-1">
                     <Button variant="outline" size="sm" onClick={() => openBuilder(course)}>Build</Button>
+                    <Button variant="ghost" size="icon" className="w-8 h-8" title="Duplicate course" onClick={() => handleDuplicateCourse(course)} disabled={saving}><Copy className="w-3.5 h-3.5"/></Button>
                     <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => openModal(course)}><Pencil className="w-3.5 h-3.5"/></Button>
                     <Button variant="ghost" size="icon" className="w-8 h-8 text-destructive" onClick={() => setDeleteTarget(course)}><Trash2 className="w-3.5 h-3.5"/></Button>
                   </div>

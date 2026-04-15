@@ -317,29 +317,19 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
   );
 
   // ──── PDF ────────────────────────────────────────────────────────────────
-  // When download OFF: Google Docs Viewer + toolbar blocker overlay
-  // When download ON: direct URL in iframe (browser native viewer)
+  // ALWAYS use Google Docs Viewer for inline display (prevents auto-download)
+  // canDownload only controls the download button — never the viewer URL
   if (fileType === 'pdf') {
-    const viewerSrc = canDownload ? url : getGoogleDocsViewerUrl(url);
+    const viewerSrc = getGoogleDocsViewerUrl(url);
     return (
       <div className="space-y-3">
         <ActionBar />
-        {canDownload ? (
-          <div className="rounded-xl overflow-hidden border bg-gray-50">
-            <iframe src={url} className="w-full border-0" style={{ height: '700px' }} title="PDF viewer" />
+        <SecureViewerFrame src={viewerSrc} title="PDF viewer" height="700px" />
+        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="PDF Viewer">
+          <div className="relative w-full h-full rounded-lg overflow-hidden">
+            <iframe src={viewerSrc} className="w-full h-full border-0" title="PDF viewer fullscreen" />
+            <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
           </div>
-        ) : (
-          <SecureViewerFrame src={viewerSrc} title="PDF viewer (view only)" height="700px" />
-        )}
-        <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title="PDF — View Only">
-          {canDownload ? (
-            <iframe src={url} className="w-full h-full border-0 rounded-lg" title="PDF viewer" />
-          ) : (
-            <div className="relative w-full h-full rounded-lg overflow-hidden">
-              <iframe src={viewerSrc} className="w-full h-full border-0" title="PDF viewer fullscreen" />
-              <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
-            </div>
-          )}
         </FullscreenModal>
       </div>
     );
@@ -447,26 +437,18 @@ function EmbeddedFileViewer({ url, canDownload }: { url: string; canDownload: bo
   }
 
   // ──── Other files (doc, ppt, xls, etc) ─────────────────────────────────
-  const viewerSrc = canDownload ? url : getGoogleDocsViewerUrl(url);
+  // ALWAYS use Google Docs Viewer for inline display (prevents auto-download)
+  // canDownload only controls the download button — never the viewer URL
+  const viewerSrc = getGoogleDocsViewerUrl(url);
   return (
     <div className="space-y-3">
       <ActionBar />
-      {canDownload ? (
-        <div className="rounded-xl border bg-gray-50 overflow-hidden">
-          <iframe src={url} className="w-full border-0" style={{ height: '600px' }} title={`File viewer (${ext})`} />
+      <SecureViewerFrame src={viewerSrc} title={`File viewer (${ext})`} height="600px" />
+      <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title={`${ext} Viewer`}>
+        <div className="relative w-full h-full rounded-lg overflow-hidden">
+          <iframe src={viewerSrc} className="w-full h-full border-0" title={`File viewer fullscreen (${ext})`} />
+          <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
         </div>
-      ) : (
-        <SecureViewerFrame src={viewerSrc} title={`File viewer (${ext})`} height="600px" />
-      )}
-      <FullscreenModal open={isFullscreen} onClose={() => setIsFullscreen(false)} title={`${ext} — View Only`}>
-        {canDownload ? (
-          <iframe src={url} className="w-full h-full border-0 rounded-lg" title={`File viewer (${ext})`} />
-        ) : (
-          <div className="relative w-full h-full rounded-lg overflow-hidden">
-            <iframe src={viewerSrc} className="w-full h-full border-0" title={`File viewer fullscreen (${ext})`} />
-            <div className="absolute top-0 left-0 right-0 z-10" style={{ height: '65px' }} />
-          </div>
-        )}
       </FullscreenModal>
     </div>
   );
@@ -541,6 +523,55 @@ export default function StudentCourseViewer() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Derived data ──────────────────────────────────────────────────────────
+  // Active lesson object (needed before signed URL hook below)
+  const activeLesson = useMemo(() => {
+    if (!activeLessonId) return null;
+    return allLessons.find(l => l.id === activeLessonId) || null;
+  }, [activeLessonId, allLessons]);
+
+  // ── Signed URL hook: if public URL fails, try signed URL for private storage ──
+  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!activeLesson?.file_url) return;
+    const url = activeLesson.file_url;
+    // Only attempt signed URL for Supabase storage URLs (not external links)
+    const isSupabaseStorage = url.includes('/storage/v1/');
+    if (!isSupabaseStorage) return;
+    // Already has a token = already signed
+    if (url.includes('token=')) return;
+    // Try to extract the storage path and create a signed URL
+    try {
+      const urlObj = new URL(url);
+      const pathParts = urlObj.pathname.split('/object/public/');
+      if (pathParts.length === 2) {
+        const bucketAndPath = pathParts[1]; // e.g. "course-files/assignments/resources/file.pdf"
+        const firstSlash = bucketAndPath.indexOf('/');
+        if (firstSlash > 0) {
+          const bucket = bucketAndPath.substring(0, firstSlash);
+          const filePath = bucketAndPath.substring(firstSlash + 1);
+          supabase.storage.from(bucket).createSignedUrl(filePath, 3600).then(({ data, error }) => {
+            if (data?.signedUrl) {
+              setSignedUrls(prev => ({ ...prev, [activeLesson.file_url!]: data.signedUrl }));
+            }
+            if (error) {
+              console.warn('[StudentViewer] Signed URL failed, using public URL:', error.message);
+            }
+          });
+        }
+      }
+    } catch {
+      // URL parsing failed, use as-is
+    }
+  }, [activeLesson?.file_url]);
+
+  // Helper: get the best available URL for a file
+  const getFileDisplayUrl = (url: string): string => {
+    return signedUrls[url] || url;
+  };
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+  // (activeLesson moved above signed URL hook)
+
   const lessonsByModule = useMemo(() => {
     const map: Record<string, Lesson[]> = {};
     allLessons.forEach(l => {
@@ -613,12 +644,6 @@ export default function StudentCourseViewer() {
     return Math.round((completedCount / completableLessons.length) * 100);
   }, [allLessons, completedIds]);
 
-  // Active lesson object
-  const activeLesson = useMemo(() => {
-    if (!activeLessonId) return null;
-    return allLessons.find(l => l.id === activeLessonId) || null;
-  }, [activeLessonId, allLessons]);
-
   // ── Load Data ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (courseId && user) loadData();
@@ -660,7 +685,30 @@ export default function StudentCourseViewer() {
             .order('order_index');
 
           if (lessErr) throw lessErr;
-          if (lessData) setAllLessons(lessData);
+          if (lessData) {
+            // ── CRITICAL: Resolve file_url for every lesson ──
+            // Admin stores file_url which might be:
+            //   1. A full public URL (https://...) — use as-is
+            //   2. A Supabase storage path (assignments/resources/...) — convert to public URL
+            //   3. A signed URL — use as-is (it has expiry in query params)
+            //   4. Empty/null — nothing to show
+            const resolvedLessons = lessData.map(lesson => {
+              if (!lesson.file_url) return lesson;
+
+              const url = lesson.file_url;
+              // Already a full URL (http/https) — use as-is
+              if (url.startsWith('http://') || url.startsWith('https://')) {
+                return lesson;
+              }
+              // Storage path — convert to public URL from 'course-files' bucket
+              const { data: urlData } = supabase.storage.from('course-files').getPublicUrl(url);
+              if (urlData?.publicUrl) {
+                return { ...lesson, file_url: urlData.publicUrl };
+              }
+              return lesson;
+            });
+            setAllLessons(resolvedLessons);
+          }
 
           // Expand first module by default
           if (modsData.length > 0) {
@@ -681,11 +729,12 @@ export default function StudentCourseViewer() {
       }
 
       // Fetch progress for this user
+      // NOTE: lesson_progress table does NOT have course_id column
+      // We filter by user_id and then match lesson_ids to this course's lessons client-side
       const { data: progData, error: progErr } = await supabase
         .from('lesson_progress')
         .select('*')
-        .eq('user_id', user.id)
-        .eq('course_id', courseId);
+        .eq('user_id', user.id);
 
       if (progErr && progErr.code !== '42P01') console.warn('Progress load error:', progErr);
       if (progData) setProgress(progData);
@@ -725,7 +774,6 @@ export default function StudentCourseViewer() {
           .from('lesson_progress')
           .insert({
             user_id: user.id,
-            course_id: courseId,
             lesson_id: lessonId,
             completed: true,
             completed_at: new Date().toISOString(),
@@ -990,7 +1038,9 @@ export default function StudentCourseViewer() {
   const renderTextContent = () => {
     const isComplete = completedIds.has(activeLesson!.id);
     const canDownload = activeLesson?.file_downloadable !== false;
-    const hasFile = !!activeLesson?.file_url;
+    const rawUrl = activeLesson?.file_url;
+    const fileUrl = rawUrl ? getFileDisplayUrl(rawUrl) : null;
+    const hasFile = !!fileUrl;
 
     return (
       <div className="space-y-6">
@@ -1001,7 +1051,7 @@ export default function StudentCourseViewer() {
         {/* ✅ FIXED: File is ALWAYS shown inline (view or view+download) */}
         {hasFile && (
           <div className="mt-6">
-            <EmbeddedFileViewer url={activeLesson!.file_url!} canDownload={canDownload} />
+            <EmbeddedFileViewer url={fileUrl!} canDownload={canDownload} />
           </div>
         )}
         {/* Mark complete button */}
@@ -1037,7 +1087,8 @@ export default function StudentCourseViewer() {
   // ── Video Content ────────────────────────────────────────────────────────
   const renderVideoContent = () => {
     const isComplete = completedIds.has(activeLesson!.id);
-    const videoUrl = activeLesson?.file_url || activeLesson?.content || '';
+    const rawVideoUrl = activeLesson?.file_url || activeLesson?.content || '';
+    const videoUrl = rawVideoUrl ? getFileDisplayUrl(rawVideoUrl) : '';
     const canDownload = activeLesson?.file_downloadable !== false;
 
     // Check if YouTube URL
@@ -1374,11 +1425,75 @@ export default function StudentCourseViewer() {
   const renderAssignmentContent = () => {
     const config = activeLesson?.assignment_config;
     const isComplete = completedIds.has(activeLesson!.id);
+    const rawFileUrl = activeLesson?.file_url;
+    const assignmentFileUrl = rawFileUrl ? getFileDisplayUrl(rawFileUrl) : null;
+    const canDownloadFile = activeLesson?.file_downloadable !== false;
+
+    // Debug: log what we have for this assignment
+    console.log('[StudentViewer] Assignment data:', {
+      lessonId: activeLesson?.id,
+      title: activeLesson?.title,
+      type: activeLesson?.type,
+      'file_url (raw)': rawFileUrl || '(empty)',
+      'file_url (resolved)': assignmentFileUrl || '(empty)',
+      file_downloadable: activeLesson?.file_downloadable,
+      'config': config ? {
+        instruction_type: config.instruction_type,
+        has_instructions: !!config.instructions,
+        resource_url: config.resource_url || '(empty)',
+        due_note: config.due_note || '(empty)',
+      } : '(null)',
+    });
 
     return (
       <div className="space-y-6">
-        {/* Assignment instructions */}
-        {config?.instructions && (
+        {/* ─── SECTION 1: Assignment Brief File (MOST PROMINENT) ─── */}
+        {/* Always show if file_url exists on this lesson — this is the uploaded brief */}
+        {assignmentFileUrl && (
+          <div className="rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-3 bg-blue-100/60 border-b border-blue-200">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <Paperclip className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <p className="font-bold text-sm text-blue-900">Assignment Brief</p>
+                  <p className="text-[10px] text-blue-600">Uploaded by your instructor — {canDownloadFile ? 'you can view & download' : 'view only'}</p>
+                </div>
+              </div>
+              <a
+                href={assignmentFileUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors shadow-sm"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Open File
+              </a>
+            </div>
+            <div className="p-4">
+              <EmbeddedFileViewer
+                url={assignmentFileUrl}
+                canDownload={canDownloadFile}
+              />
+            </div>
+            {canDownloadFile && (
+              <div className="px-5 pb-4">
+                <a
+                  href={assignmentFileUrl}
+                  download
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700 hover:bg-indigo-100 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download File to Your Device
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── SECTION 2: Assignment Instructions (text or URL) ─── */}
+        {config?.instructions && config.instruction_type !== 'file' && (
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-blue-800">
               <MessageSquare className="w-5 h-5" />
@@ -1401,16 +1516,36 @@ export default function StudentCourseViewer() {
                 {config.instructions}
               </div>
             )}
-            {config.due_note && (
-              <div className="flex items-center gap-2 text-xs text-amber-600">
-                <Clock className="w-3.5 h-3.5" />
-                {config.due_note}
-              </div>
-            )}
           </div>
         )}
 
-        {/* Lesson content (additional context) */}
+        {/* ─── SECTION 3: External resource URL (if different from file) ─── */}
+        {config?.instruction_type === 'url' && config.resource_url && (
+          <a
+            href={config.resource_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 p-4 bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-200 rounded-xl hover:shadow-md transition-shadow group"
+          >
+            <div className="w-10 h-10 bg-white rounded-xl shadow-sm flex items-center justify-center group-hover:scale-105 transition-transform">
+              <ExternalLink className="w-5 h-5 text-teal-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-sm text-teal-800">External Resource</p>
+              <p className="text-xs text-teal-600 truncate">{config.resource_url}</p>
+            </div>
+          </a>
+        )}
+
+        {/* ─── SECTION 4: Due date ─── */}
+        {config?.due_note && (
+          <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+            <Clock className="w-4 h-4 flex-shrink-0" />
+            <span className="font-medium">{config.due_note}</span>
+          </div>
+        )}
+
+        {/* ─── SECTION 5: Additional lesson content ─── */}
         {activeLesson?.content && activeLesson.type === 'assignment' && (
           <div
             className="prose prose-sm max-w-none text-gray-600"
@@ -1418,7 +1553,28 @@ export default function StudentCourseViewer() {
           />
         )}
 
-        {/* Existing submission info */}
+        {/* ─── SECTION 6: Accepted submission methods ─── */}
+        {config && (
+          <div className="flex flex-wrap gap-2">
+            {config.allow_text !== false && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-lg text-[10px] text-gray-600 font-medium">
+                <FileText className="w-3 h-3" /> Written Text
+              </span>
+            )}
+            {config.allow_url !== false && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-lg text-[10px] text-gray-600 font-medium">
+                <LinkIcon className="w-3 h-3" /> URL / Link
+              </span>
+            )}
+            {config.allow_file !== false && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-lg text-[10px] text-gray-600 font-medium">
+                <Upload className="w-3 h-3" /> File Upload
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* ─── SECTION 7: Existing submission info ─── */}
         {assignExistingSubmission && (
           <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
             <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
@@ -1440,7 +1596,7 @@ export default function StudentCourseViewer() {
           </div>
         )}
 
-        {/* Submission form */}
+        {/* ─── SECTION 8: Submission form ─── */}
         {!assignSubmitted && (
           <div className="space-y-4 pt-4 border-t">
             <p className="font-semibold text-sm text-gray-800">Submit Your Work</p>
@@ -1523,7 +1679,8 @@ export default function StudentCourseViewer() {
 
   // ── URL Content ──────────────────────────────────────────────────────────
   const renderUrlContent = () => {
-    const url = activeLesson?.file_url || activeLesson?.content || '';
+    const rawUrl = activeLesson?.file_url || activeLesson?.content || '';
+    const url = rawUrl ? getFileDisplayUrl(rawUrl) : '';
     const isComplete = completedIds.has(activeLesson!.id);
 
     return (
