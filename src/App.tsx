@@ -26,7 +26,6 @@ import AdminSurveyAnalytics from './pages/admin/AdminSurveyAnalytics';
 import AdminSettings from './pages/admin/AdminSettings';
 
 // Instructor Pages
-import InstructorStudentWork from './pages/instructor/InstructorStudentWork';
 import InstructorDashboard from './pages/instructor/InstructorDashboard';
 import InstructorStudents from './pages/instructor/InstructorStudents';
 import InstructorCourses from './pages/instructor/InstructorCourses';
@@ -52,7 +51,7 @@ function Footer() {
       <div className="mx-auto max-w-7xl px-6 py-4">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} Bloomy LMS. All rights reserved.
+            &copy; {new Date().getFullYear()} Bloomy LMS. Created and owned by Korede Samuel.
           </p>
           <a
             href="https://www.linkedin.com/in/koredesamuel"
@@ -214,7 +213,7 @@ function AppRoutes() {
           <Route path="final-assessment" element={<AdminFinalAssessment />} />
           <Route path="attendance" element={<AdminAttendance />} />
           <Route path="assignments" element={<Placeholder />} />
-          <Route path="grades" element={<InstructorStudentWork />} />
+          <Route path="grades" element={<Placeholder />} />
           <Route path="announcements" element={<Placeholder />} />
         </Route>
 

@@ -10,7 +10,6 @@ import {
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { supabase } from '@/lib/supabase';
 
 const allNavItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard, roles: ['admin', 'instructor', 'student'] },
@@ -22,7 +21,6 @@ const allNavItems = [
   { name: 'Students Progress', href: '/progress', icon: BarChart3, roles: ['admin', 'instructor', 'student'] },
   { name: 'Survey Analytics', href: '/Survey-Analytics', icon: BarChart3, roles: ['admin'] },
   { name: 'Final Assessment', href: '/final-assessment', icon: FileText, roles: ['admin', 'instructor', 'student'] },
-  { name: 'Grade Work', href: '/grades', icon: ClipboardList, roles: ['instructor'] },
   { name: 'Gradebook', href: '/gradebook', icon: ClipboardList, roles: ['admin'] },
   { name: 'Payments', href: '/payments', icon: DollarSign, roles: ['admin'] },
   { name: 'Reports', href: '/reports', icon: BarChart3, roles: ['admin'] },
@@ -35,7 +33,7 @@ function Footer() {
       <div className="mx-auto max-w-7xl px-6 py-4">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} Bloomy LMS. All rights reserved.
+            &copy; {new Date().getFullYear()} Bloomy LMS. Created and owned by Korede Samuel.
           </p>
           <a
             href="https://www.linkedin.com/in/koredesamuel"
@@ -62,19 +60,14 @@ function Footer() {
 }
 
 function SidebarContent() {
-  const { role, profile, user } = useAuth();
+  const { role, profile, user, signOut } = useAuth();
   const { name, logoUrl } = useInstitute();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
   const filteredNavItems = allNavItems.filter(item => item.roles.includes(role || ''));
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    window.location.replace('/login');
-  };
-
-  // ── FIX: Build full path without trailing slash ──
+  // ── Build full path without trailing slash ──
   // Dashboard href is '/' — we must return '/admin' NOT '/admin/'
   const getFullPath = (href: string) => {
     const prefix = `/${role}`;
@@ -82,7 +75,7 @@ function SidebarContent() {
     return `${prefix}${href}`;        // '/admin/students'
   };
 
-  // ── FIX: Active detection that works with nested routes ──
+  // ── Active detection that works with nested routes ──
   const isActive = (fullPath: string) => {
     // Dashboard: only active on exact /admin or /admin/
     if (fullPath === `/${role}`) {
@@ -210,7 +203,7 @@ function SidebarContent() {
                 ? 'w-full justify-center text-gray-400 hover:text-white hover:bg-slate-800 p-2'
                 : 'w-full justify-start text-gray-300 hover:text-white hover:bg-slate-800'
             )}
-            onClick={handleLogout}
+            onClick={signOut}
           >
             <LogOut className="w-4 h-4 shrink-0" />
             <span className={cn(
