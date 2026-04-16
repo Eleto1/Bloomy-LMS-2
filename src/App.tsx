@@ -50,17 +50,14 @@ function Footer() {
     <footer className="w-full border-t border-border/40 bg-background/50 backdrop-blur-sm">
       <div className="mx-auto max-w-7xl px-6 py-4">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} Bloomy LMS. Created and owned by Korede Samuel.
-          </p>
           <a
             href="https://www.linkedin.com/in/koredesamuel"
             target="_blank"
             rel="noopener noreferrer"
             className="group inline-flex items-center gap-2 transition-colors duration-200"
           >
-            <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors duration-200">
-              Built by&nbsp;
+            <span className="text-xs text-muted-foreground">
+              &copy; {new Date().getFullYear()} Bloomy LMS. Created and owned by&nbsp;
             </span>
             <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground underline-offset-4 group-hover:underline transition-colors duration-200">
               Korede Samuel
