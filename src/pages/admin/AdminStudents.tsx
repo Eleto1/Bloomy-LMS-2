@@ -29,6 +29,25 @@ function getCohort(student: Student): { name: string; course: string } | null {
   return student.cohorts;
 }
 
+function generatePassword(length = 12): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%&*';
+  let result = '';
+  const array = new Uint32Array(length);
+  crypto.getRandomValues(array);
+  for (let i = 0; i < length; i++) {
+    result += chars[array[i] % chars.length];
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// REPLACE THIS with your actual Supabase project ref
+// e.g. if your URL is https://abc123.supabase.co then use "abc123"
+// ═══════════════════════════════════════════════════════════════════
+const SUPABASE_PROJECT_REF = 'zcxysvrwblwogubakssf';
+const CREATE_STUDENT_URL = `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/create-student`;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
 export default function AdminStudents() {
   const [students, setStudents] = useState<Student[]>([]);
   const [cohorts, setCohorts] = useState<Cohort[]>([]);
@@ -67,7 +86,6 @@ export default function AdminStudents() {
     return Array.from(new Set(source.map(c => c.course)));
   }, [cohorts, filterCohortName]);
 
-  // Students available in the current cohort+program filter (for the Student dropdown)
   const availableStudents = useMemo(
     () => students.filter(s => {
       const cohort = getCohort(s);
@@ -78,7 +96,6 @@ export default function AdminStudents() {
     [students, filterCohortName, filterProgram]
   );
 
-  // Final filtered list shown in the table
   const filtered = useMemo(
     () => students.filter(s => {
       const cohort = getCohort(s);
@@ -107,11 +124,6 @@ export default function AdminStudents() {
       if (cohortError) throw cohortError;
       if (cohortData) setCohorts(cohortData as Cohort[]);
 
-      // NOTE: "!cohort_id" is REQUIRED here because there are multiple foreign key
-      // relationships between 'profiles' and 'cohorts' tables. Without it, Supabase
-      // throws: "Could not embed because more than one relationship was found".
-      // PostgREST embedded resources use LEFT JOIN by default, so this includes
-      // students even when cohort_id is NULL.
       const { data: studentData, error: studentError } = await supabase
         .from('profiles')
         .select('id, full_name, email, phone, admission_date, created_at, cohort_id, cohorts!cohort_id(name, course)')
@@ -130,8 +142,6 @@ export default function AdminStudents() {
   }, [toast]);
 
   useEffect(() => { fetchInitialData(); }, [fetchInitialData]);
-
-  // Reset dependent filters when parent changes
   useEffect(() => { setFilterProgram('all'); setFilterStudentId('all'); }, [filterCohortName]);
   useEffect(() => { setFilterStudentId('all'); }, [filterProgram]);
 
@@ -205,52 +215,34 @@ export default function AdminStudents() {
         toast({ title: 'Student Updated' });
 
       } else {
-        // ── Create new student ──
+        // ── Create new student via Edge Function ──
         if (!form.password) {
           return toast({ title: 'Password required', variant: 'destructive' });
         }
 
-        // Save admin session so we can restore it after signUp
-        const { data: { session: adminSession } = {} } = await supabase.auth.getSession();
-
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: form.email,
-          password: form.password,
-          options: { data: { full_name: form.full_name, role: 'student' } }
+        const res = await fetch(CREATE_STUDENT_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({
+            email: form.email,
+            password: form.password,
+            full_name: form.full_name,
+            phone: form.phone || null,
+            admission_date: form.admission_date || null,
+            cohort_id: cohortIdToSave,
+          }),
         });
-        if (authError) throw authError;
 
-        // Restore admin session
-        if (adminSession) {
-          await supabase.auth.setSession(adminSession.access_token, adminSession.refresh_token);
+        const result = await res.json();
+
+        if (!res.ok) {
+          throw new Error(result.error || 'Failed to create student');
         }
 
-        if (authData.user) {
-          // Use upsert instead of update — the profile row may not exist yet
-          // if there's no database trigger auto-creating it on signUp.
-          // onConflict ensures it updates if the row already exists.
-          const { error: profileError } = await supabase
-            .from('profiles')
-            .upsert({
-              id: authData.user.id,
-              full_name: form.full_name,
-              email: form.email,
-              phone: form.phone || null,
-              admission_date: form.admission_date || null,
-              cohort_id: cohortIdToSave,
-              role: 'student'
-            }, { onConflict: 'id' });
-
-          if (profileError) {
-            console.error('Profile upsert error:', profileError);
-            toast({
-              title: 'Warning',
-              description: 'Auth user created but profile save failed: ' + profileError.message,
-              variant: 'destructive'
-            });
-          }
-        }
-        toast({ title: 'Student Created!' });
+        toast({ title: 'Student Created!', description: 'A welcome email has been sent.' });
       }
 
       setModalOpen(false);
@@ -316,7 +308,6 @@ export default function AdminStudents() {
       };
 
       let ok = 0, fail = 0;
-      const { data: { session: adminSess } = {} } = await supabase.auth.getSession();
 
       for (let i = 1; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
@@ -336,34 +327,27 @@ export default function AdminStudents() {
         );
         if (!coh) { fail++; continue; }
 
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email,
-          password: 'Password123!',
-          options: { data: { full_name: name, role: 'student' } }
-        });
+        const autoPassword = generatePassword(12);
 
-        if (authError || !authData.user) { fail++; continue; }
-
-        // Restore admin session after signUp
-        if (adminSess) {
-          await supabase.auth.setSession(adminSess.access_token, adminSess.refresh_token);
-        }
-
-        // Use upsert — profile row may not exist yet
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .upsert({
-            id: authData.user.id,
+        const res = await fetch(CREATE_STUDENT_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({
+            email,
+            password: autoPassword,
             full_name: name,
-            email: email,
             phone: phone || null,
             admission_date: date || null,
             cohort_id: coh.id,
-            role: 'student'
-          }, { onConflict: 'id' });
+          }),
+        });
 
-        if (profileError) {
-          console.error('Bulk profile upsert error for', email, ':', profileError);
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+          console.error('Bulk create failed for', email, ':', result.error);
           fail++;
         } else {
           ok++;
@@ -372,7 +356,7 @@ export default function AdminStudents() {
 
       toast({
         title: 'Bulk Upload Complete',
-        description: `${ok} added, ${fail} failed.`
+        description: `${ok} added, ${fail} failed. Welcome emails sent to new students.`
       });
       setBulkModalOpen(false);
       setBulkCsvText('');
@@ -632,12 +616,22 @@ export default function AdminStudents() {
             {!editing && (
               <div className="col-span-2">
                 <Label>Password *</Label>
-                <Input
-                  type="password"
-                  value={form.password}
-                  onChange={e => setForm({ ...form, password: e.target.value })}
-                  placeholder="Minimum 6 characters"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    type="text"
+                    value={form.password}
+                    onChange={e => setForm({ ...form, password: e.target.value })}
+                    placeholder="Enter or generate a password"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setForm({ ...form, password: generatePassword(12) })}
+                  >
+                    Generate
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -670,8 +664,8 @@ export default function AdminStudents() {
               <code className="bg-gray-100 px-1 rounded">phone</code>,{' '}
               <code className="bg-gray-100 px-1 rounded">admission_date</code>
             </p>
-            <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded">
-              ⚠ All uploaded students will receive the default password: <strong>Password123!</strong>
+            <p className="text-xs text-emerald-600 bg-emerald-50 p-2 rounded">
+              A random password will be generated for each student and sent via welcome email.
             </p>
             <div className="flex gap-2 items-center">
               <Button variant="outline" size="sm" onClick={downloadTemplate}>
@@ -681,7 +675,7 @@ export default function AdminStudents() {
             </div>
             {bulkCsvText && (
               <div className="text-xs text-green-600 bg-green-50 p-2 rounded">
-                ✅ File loaded and ready for upload.
+                File loaded and ready for upload.
               </div>
             )}
           </div>
